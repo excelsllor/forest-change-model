@@ -1,0 +1,5 @@
+*.onnx
+*.pth
+*.zip
+*.h5
+*.npz
