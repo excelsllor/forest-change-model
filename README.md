@@ -7,6 +7,43 @@
 Файлы весов выложены в **Releases** этого репозитория (в git они не входят:
 263 МБ и 124 МБ превышают лимит GitHub в 100 МБ на файл).
 
+## Актуальные модели (v2.0): маска bicfcpn_big + TypeNet
+
+Финальные артефакты (2026-10-19), стоят в QGIS-плагине **v0.12.0** (ONNX-экспорты — в git
+плагина `forest-change-qgis`). Послойные описания и схемы: `MODEL_MASK_ARCH.md`,
+`MODEL_TYPES_ARCH.md`.
+
+### Маска: `masknet_v2_bicfcpn_big.pth` (+ `encoder_dofa_distilled.pth`) — 1.69M
+
+- входы: `vol` (B,T,6,32,32) — **сырой рефлектанс/10000, clip 0..1.5** (без z-норм),
+  `dt` (B,T) — годы между датами (dt[0]=0), `doy` (B,T,3) — (sin DOY, cos DOY, год−2015);
+  T≤8 (в ONNX фикс. T=8 с добивкой нулями, B динамическая);
+- архитектура: CnnEncoder (λ-стем + 4 ConvBlock 48→96→192→256→256, GAP → 256-d/дата;
+  **заморожен**, дистиллирован из DOFA-B: cos 0.899/0.818) + двунаправленный CfC
+  (CfCBiEncoderPN 260→128, backbone 128×2, residual) + голова (256→64→2);
+- точность: mixed val F1 **0.917**; организаторы 0.825 (P 0.971/R 0.718), p1/p2/p3 0.697/0.918/0.840;
+  каналы C=6/5/4 → 0.825/0.780/0.856;
+- скорость (256 чипов): GPU fwd 339 мс, CPU 3.85 с; ONNX `masknet_v2_cfc.onnx` (6.9 МБ).
+
+### Типы: `typenet_big_w256_b2.pth` (+ `encoder_dofa_distilled_big.pth`) — 7.58M + 2.21M
+
+- входы: чипы 32 px по датам (≤8, сырой рефлектанс/10000), `dt` (годы), `doy` (sin/cos/год);
+- архитектура: CnnDofaLike (λ-стем + 12 depthwise-separable слоёв ×768, дилатации [1,2,4,8]×3,
+  RF≈185, GAP → 768-d/дата; **заморожен**, дистилляция DOFA: cos 0.866/0.760) +
+  CfCBiStack ×2 (ширина 256, двунаправленный, mean по T) + голова → 3 класса
+  (logging/windfall/fire, **без no_change** — его отсекает маска);
+- точность (val, macro по присутствующим классам): **0.859** (log 0.814/wind 0.831/fire 0.933);
+  big4 0.875, california 0.962, пары 0.824, длинные 0.879, vozh 0.404 (слабое место — windfall);
+- альтернатива для vozh-сцен: `typenet_big_w256_b2_vozhft_mix.pth` (vozh wind 0.517, big4 0.854);
+- ONNX: `typenet_encoder.onnx` (30.4 МБ) + `typenet_cfc.onnx` (9.0 МБ).
+
+### Энкодеры (дистилляция DOFA)
+
+| файл | размер | что это |
+|---|---|---|
+| `encoder_dofa_distilled.pth` | 5.4 МБ | CnnEncoder 1.41M (cos 0.899/0.818) — энкодер маски |
+| `encoder_dofa_distilled_big.pth` | 29 МБ | CnnDofaLike 12×768 7.58M (cos 0.866/0.760) — энкодер типов |
+
 ## Новые модели (v1.3): маска и T-агностичные варианты
 
 ### 1. `mask_mini3d_3d_cfc.pth` — модель МАСКИ (production, бинарно) — 139k параметров
