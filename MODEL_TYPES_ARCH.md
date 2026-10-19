@@ -106,6 +106,24 @@ logging/windfall/fire, без no_change), 60 эпох.
 по источникам (macro по присутствующим классам): big4 **0.849** (0.807/0.858/0.881),
 california 0.950, пары 0.870, длинные 0.884, vozh 0.422 (log 0.791 / wind 0.474 / fire n=1).
 
+### Голова: ширина и сводки (2026-10-19) — канон
+
+Диагностика показала, что mean-пулинг CfC теряет временной контраст: линейная проба на
+`[mean(feats), last−first]` давала vozh wind **0.649** против 0.474 у CfC. Проверены три головы
+(та же CfC 2×256, тот же протокол/сид, 60 эпох):
+
+| голова | вход | val macro | vozh (log/wind) | big4 | cal | pairs | long |
+|---|---|---|---|---|---|---|---|
+| `512→64→3` (база) | CfC | 0.837 | 0.422 (0.791/0.474) | 0.849 | 0.950 | 0.870 | 0.884 |
+| `512→256→3` | CfC | 0.855 | 0.537 (0.934/0.678) | 0.840 | 0.979 | 0.845 | 0.793 |
+| **`2048→256→3` + сводки** | CfC 512 + mean 768 + (last−first) 768 | **0.870** | **0.547 (0.944/0.698)** | **0.860** | 0.972 | **0.920** | **0.939** |
+
+Классы канона: log **0.922** / wind **0.877** / fire **0.983**. Чекпоинт
+`typenet_big_w256_b2.pth` (= `_hsum256`), ONNX `typenet_cfc.onnx` 11.0 МБ.
+**Вывод:** узкое место было в readout (64-d голова на mean-пулинге), а не в энкодере; ширина
+головы дала основную часть прироста, сводки — остальное (big4/pairs/long).
+Были также варианты `_hw256` (ширина без сводок) и `_hsum256` (канон).
+
 ### ⚠️ Баг big4 в кэше фич и фикс (2026-10-19, честная база)
 
 `extract_typenet_feats.py` для big4 **не делил X1/X2 на 10000** (в `big4_chips.npz` они в DN
@@ -199,7 +217,7 @@ FT-чекпоинт лежит рядом как альтернатива для
 RF ≈ 185 px (> 32) — покрывает весь чип; каждый блок: dw 768·9+768 + GN 1536 + pw 768²+768
 + GN 1536 ≈ 1.18M.
 
-**`typenet_cfc.onnx` (9.0 МБ)** — `TypeNetFeats` 2.21M, входы `feats` (M,8,768), `dt` (M,8),
+**`typenet_cfc.onnx` (11.0 МБ)** — `TypeNetFeats` 2.70M, входы `feats` (M,8,768), `dt` (M,8),
 `doy` (M,8,3) (T фикс. 8, паддинг), выход `logits` (M,3):
 
 | # | модуль | операции | форма | параметры |
@@ -209,23 +227,24 @@ RF ≈ 185 px (> 32) — покрывает весь чип; каждый бло
 | 2 | CfCBiBlock 1 | LayerNorm(772) → Linear(772→256); CfC_fwd/CfC_bwd (backbone 2×(Linear(512→256)+LeakyReLU(0.1)), ff1/ff2/time_a/time_b Linear(256→256)); y = concat(y_f, y_b) = 512 (per-step, residual) | (M,T,512) | 1.19M |
 | 3 | CfCBiBlock 2 | LayerNorm(512) → Linear(512→256) → то же | (M,T,512) | 0.99M |
 | 4 | mean по T | — | (M,512) | — |
-| 5 | голова | LayerNorm(512) → Linear(512→64) → GELU → Dropout(0.2) → Linear(64→3) | (M,3) | 33.2k |
+| 5 | сводки | mean_T(feats) и last−first(feats) по валидным датам (`idx=(dt>0).sum`, паддинг отсекается) | (M,1536) | — |
+| 6 | голова | LayerNorm(2048) → Linear(2048→256) → GELU → Dropout(0.2) → Linear(256→3) | (M,3) | 0.53M |
 
 - **Скорость** (256 чипов × T=8, RX 5700 XT): энкодер fwd 339 мс (1.32 мс/чип), fwd+bwd 3.01 с;
   CPU 3.85 с. CfC-стек незначителен на фоне энкодера.
 - **Рецепт инференса (совпадает с обучением):** сырой рефлектанс (clamp 0..1.5), dt — годы между
   датами, doy = (sin, cos, год−2015), для канонических мозаик год = 0.
-- **Поведение на сцене:** на GT-чипах p3 через ONNX-пайплайн recall logging 78% / windfall 98%
-  (до фикса big4 было 86%/97%, но та голова опиралась на шорткат);
-  `no_change` не классифицируется (решает маска), но на ложных срабатываниях маски CfC по
-  умолчанию отвечает «windfall» (895/1000 no_change GT-чипов → windfall) — поэтому доля windfall
-  в сцене зависит от порога маски, а не только от TypeNet.
+- **Поведение на сцене:** на GT-чипах p3 через ONNX-пайплайн recall logging **88.1%** / windfall
+  **93.6%** (до головы со сводками было 78.3%/97.9%); доля logging среди предсказанных изменений
+  65.6% (GT 72.6%; было 57.4%). `no_change` не классифицируется (решает маска), но на ложных
+  срабатываниях маски CfC по умолчанию отвечает «windfall» (785/1000 no_change GT-чипов → windfall;
+  было 895) — доля windfall в сцене зависит от порога маски.
 
 Артефакты: `encoder_dofa_distilled_big.pth` (7.58M), `typenet_big_w256_b2.pth/.json`
-(канон после фикса; старая — `_shortcut`, варианты — `_fix1`/`_vozhft`/`_vozhft_mix`),
-`tn_{vozh,big4,cal,pairs,long}.npz` (кэш признаков), `src/typenet_big.py`,
-`src/train_typenet_big.py`, `src/extract_typenet_feats.py`, `src/eval_typenet_big.py`,
-`src/ft_typenet_vozh.py`, `src/export_onnx_new.py`.
+(канон = `_hsum256`; `_hw256` — широкая без сводок; `_fix1` — честная база 64-d; `_shortcut` —
+старая на мусорном big4; `_vozhft`/`_vozhft_mix` — FT от старой базы), `tn_*.npz` (кэш признаков),
+`src/typenet_big.py`, `src/train_typenet_big.py`, `src/extract_typenet_feats.py`,
+`src/eval_typenet_big.py`, `src/ft_typenet_vozh.py`, `src/export_onnx_new.py`.
 
 ---
 
@@ -265,12 +284,13 @@ fusion: concat(128,96)=224 → MLP(224→64→4)
 ---
 
 ## Что использовать
-- **Плагин (v0.12.1):** типы = **TypeNet big** (`typenet_encoder.onnx` + `typenet_cfc.onnx`,
-  **0.837** macro на val (честная база после фикса big4), 3 класса, строго по маске);
-  маска = **masknet_v2_cfc.onnx** (bicfcpn_big, val F1 0.917). Е2Е-тест на p3-мозаике:
-  маска 90 с, типы 378 с (DirectML).
+- **Плагин (v0.12.2):** типы = **TypeNet big** (`typenet_encoder.onnx` + `typenet_cfc.onnx`
+  11 МБ, голова со сводками) — **0.870** macro на val (классы 0.922/0.877/0.983), 3 класса,
+  строго по маске; GT p3: recall log 88% / wind 94%; маска = **masknet_v2_cfc.onnx**
+  (bicfcpn_big, val F1 0.917). Е2Е-тест на p3-мозаике: маска 93 с, типы 374 с (DirectML).
 - **Альтернатива для vozh-сцен:** переобучить FT от честной базы (`ft_typenet_vozh.py`; старая
-  `_vozhft_mix` сделана от сломанной базы). На поздних эпохах честной базы vozh уже 0.51.
+  `_vozhft_mix` сделана от сломанной базы). Вариант `_hw256` (широкая голова без сводок) даёт
+  vozh 0.537, но хуже по big4/pairs/long.
 - **Архив:** production fusion (0.938, ONNX 426 МБ) и TypeNet-v3 DOFA-512 (0.902) — файлы
   `forest_change_fusion128.onnx`, `typenet_v3_w512_3c.pth` сохранены в репозитории моделей;
   старая (шорткат) голова — `typenet_big_w256_b2_shortcut.pth`.
