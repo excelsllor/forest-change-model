@@ -7,13 +7,13 @@
 Файлы весов выложены в **Releases** этого репозитория (в git они не входят:
 263 МБ и 124 МБ превышают лимит GitHub в 100 МБ на файл).
 
-## Актуальные модели (v2.4): маска bicfcpn_big + контекст 3x3 + TypeNet
+## Актуальные модели (v2.5): маска bicfcpn_big + контекст 3x3 + length-aware CfC + TypeNet
 
 Финальные артефакты (2026-10-19), стоят в QGIS-плагине **v0.12.0** (ONNX-экспорты — в git
 плагина `forest-change-qgis`). Послойные описания и схемы: `MODEL_MASK_ARCH.md`,
 `MODEL_TYPES_ARCH.md`.
 
-### Маска: `mask_ctx_conv3_final.pth` (+ `encoder_dofa_distilled.pth`) — 1.22M + 1.41M
+### Маска: `mask_ctx_conv3_len.pth` (+ `encoder_dofa_distilled.pth`) — 1.22M + 1.41M
 
 - входы: `vol` (B,T,6,32,32) — **сырой рефлектанс/10000, clip 0..1.5** (без z-норм),
   `dt` (B,T) — годы между датами (dt[0]=0), `doy` (B,T,3) — (sin DOY, cos DOY, год−2015);
