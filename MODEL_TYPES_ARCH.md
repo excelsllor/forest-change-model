@@ -2,7 +2,9 @@
 
 **Финальный чекпоинт:** `typenet_big_w256_b2.pth` (model repo v2.5)
 **ONNX (плагин v0.15+):** `typenet_encoder.onnx` (30.3 МБ) + `typenet_cfc.onnx` (10.9 МБ, динамическое T)
-**Схема:** `outputs/arch/11_typenet_final.png` (PNG + SVG)
+**Схема:** [docs/11_typenet_final.png](docs/11_typenet_final.png) (PNG + SVG)
+
+![Блок-схема TypeNet](docs/11_typenet_final.png)
 
 Задача: для чипа 32×32 px (320 м), где маска нашла изменение, определить тип:
 **logging / windfall / fire** (`no_change` не классифицируется — его отсекает маска).

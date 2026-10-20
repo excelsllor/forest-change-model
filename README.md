@@ -15,6 +15,10 @@
 Подробные послойные описания и схемы: **[MODEL_MASK_ARCH.md](MODEL_MASK_ARCH.md)**,
 **[MODEL_TYPES_ARCH.md](MODEL_TYPES_ARCH.md)**, диаграммы в [docs/](docs/).
 
+![Блок-схема маски](docs/10_mask_final_bicfcpn_big.png)
+
+![Блок-схема TypeNet](docs/11_typenet_final.png)
+
 ---
 
 ## 1. Маска: `mask_ctx_conv3_len.pth`

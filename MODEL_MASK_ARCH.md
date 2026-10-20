@@ -2,7 +2,9 @@
 
 **Финальный чекпоинт:** `mask_ctx_conv3_len.pth` (model repo v2.5)
 **ONNX (плагин v0.15+):** `masknet_encoder.onnx` (5.5 МБ) + `masknet_cfc.onnx` (4.9 МБ, динамическое T)
-**Схема:** `outputs/arch/10_mask_final_bicfcpn_big.png` (PNG + SVG)
+**Схема:** [docs/10_mask_final_bicfcpn_big.png](docs/10_mask_final_bicfcpn_big.png) (PNG + SVG)
+
+![Блок-схема маски](docs/10_mask_final_bicfcpn_big.png)
 
 Пайплайн плагина: снимки (6 каналов) → энкодер по каждому чипу/дате → признаки 256-d →
 контекст 3×3 (малый энкодер) → CfC (динамическое T) → бинарная маска изменения.
