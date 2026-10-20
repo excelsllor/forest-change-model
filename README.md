@@ -1,172 +1,110 @@
-# Forest Change — trained models
+# Forest Change — trained models (final)
 
-Веса обученных моделей для задачи выявления и классификации лесных изменений
-(вырубка / ветровал / пожар) по Sentinel-2. Используются QGIS-плагином
-`forest-change-qgis` (модель в ONNX) и пайплайном обучения.
+Финальные модели задачи выявления и классификации лесных изменений (вырубка / ветровал /
+пожар) по Sentinel-2 для QGIS-плагина [`forest-change-qgis`](https://github.com/excelsllor/forest-change-qgis)
+(v0.15+). Веса лежат в git (все файлы < 100 МБ), ONNX-экспорты — в git плагина.
 
-Файлы весов выложены в **Releases** этого репозитория (в git они не входят:
-263 МБ и 124 МБ превышают лимит GitHub в 100 МБ на файл).
+Два шага: **маска изменения** (бинарно) → **тип** (logging / windfall / fire).
 
-## Актуальные модели (v2.5): маска bicfcpn_big + контекст 3x3 + length-aware CfC + TypeNet
-
-Финальные артефакты (2026-10-19), стоят в QGIS-плагине **v0.12.0** (ONNX-экспорты — в git
-плагина `forest-change-qgis`). Послойные описания и схемы: `MODEL_MASK_ARCH.md`,
-`MODEL_TYPES_ARCH.md`.
-
-### Маска: `mask_ctx_conv3_len.pth` (+ `encoder_dofa_distilled.pth`) — 1.22M + 1.41M
-
-- входы: `vol` (B,T,6,32,32) — **сырой рефлектанс/10000, clip 0..1.5** (без z-норм),
-  `dt` (B,T) — годы между датами (dt[0]=0), `doy` (B,T,3) — (sin DOY, cos DOY, год−2015);
-  T≤8 (в ONNX фикс. T=8 с добивкой нулями, B динамическая);
-- архитектура: CnnEncoder (λ-стем + 4 ConvBlock 48→96→192→256→256, GAP → 256-d/дата;
-  **заморожен**, дистиллирован из DOFA-B: cos 0.899/0.818) + двунаправленный CfC
-  (CfCBiEncoderPN 260→128, backbone 128×2, residual) + **голова со сводками**
-  `[CfC 256, mean 256, last−first 256] → 768→256→2`;
-- точность (канон 2026-10-19, контекст 3x3 conv3): **организаторы F1 0.936**
-  (P 0.942 / **R 0.931**), p1/p2/p3 **0.939 / 0.971 / 0.907**; GT p3 на сцене через плагин:
-  P 0.963 / R 0.951 / F1 **0.957**; zero-vol F1 0.008 (решения из снимков);
-- архитектура: энкодер (малый, 1.41M) + CfC 128 с контекстом 3x3 (conv3x3 по фичам соседей,
-  маска валидности) + сводки mean/last−first; **T=4** (как в обучении, без T=8-паддинга);
-- скорость (256 чипов): GPU fwd 339 мс, CPU 3.85 с; сцена p3: маска 53 с (кэш GDAL + prefetch);
-- ONNX: `masknet_encoder.onnx` (5.7 МБ) + `masknet_cfc.onnx` (4.9 МБ).
-
-### Типы: `typenet_big_w256_b2.pth` (+ `encoder_dofa_distilled_big.pth`) — 7.58M + 2.21M
-
-- входы: чипы 32 px по датам (≤8, сырой рефлектанс/10000), `dt` (годы), `doy` (sin/cos/год);
-- архитектура: CnnDofaLike (λ-стем + 12 depthwise-separable слоёв ×768, дилатации [1,2,4,8]×3,
-  RF≈185, GAP → 768-d/дата; **заморожен**, дистилляция DOFA: cos 0.866/0.760) +
-  CfCBiStack ×2 (ширина 256, двунаправленный, mean по T) + **голова со сводками**
-  `[CfC 512, mean 768, last−first 768] → 2048→256→3` (3 класса: logging/windfall/fire,
-  **без no_change** — его отсекает маска);
-- точность (val, macro по присутствующим классам, **канон 2026-10-19, голова со сводками**): **0.870**
-  (log 0.922/wind 0.877/fire 0.983); big4 0.860 (0.816/0.830/0.934), california 0.972,
-  пары 0.920, длинные 0.939, vozh 0.547 (log 0.944 / **wind 0.698**); GT p3: recall log 88% / wind 94%;
-- ⚠️ **история:** версия v2.0 этого чекпоинта обучалась на сломанных big4-фичах (экстрактор не
-  делил uint16 DN на 10000 → фичи были почти константны, а «big4 0.875» — шорткат по dt/doy;
-  детали в `MODEL_TYPES_ARCH.md`). Честная база 64-d головы давала 0.837; старая версия лежит
-  как `typenet_big_w256_b2_shortcut.pth` (на честных фичах 0.763); вариант без сводок —
-  `typenet_big_w256_b2_hw256.pth` (0.855, vozh 0.537);
-- `_vozhft`/`_vozhft_mix` дообучались от сломанной базы — переобучать при необходимости;
-- ONNX: `typenet_encoder.onnx` (30.4 МБ) + `typenet_cfc.onnx` (11.0 МБ) — в git плагина (v0.12.2).
-
-### Энкодеры (дистилляция DOFA)
-
-| файл | размер | что это |
-|---|---|---|
-| `encoder_dofa_distilled.pth` | 5.4 МБ | CnnEncoder 1.41M (cos 0.899/0.818) — энкодер маски |
-| `encoder_dofa_distilled_big.pth` | 29 МБ | CnnDofaLike 12×768 7.58M (cos 0.866/0.760) — энкодер типов |
-
-## Новые модели (v1.3): маска и T-агностичные варианты
-
-### 1. `mask_mini3d_3d_cfc.pth` — модель МАСКИ (production, бинарно) — 139k параметров
-
-- входы: `vol` (B,T,6,32,32), `seq` (B,T,9), `dt` (B,T) — T до 36 (в ONNX фиксирована T=8 с
-  добивкой нулями, B динамическая);
-- архитектура: 3D-CNN (Conv3d 6→16→32→64, GroupNorm, stride (1,2,2), AdaptiveAvgPool3d) +
-  CfC(9→96) + fusion-голова (160→64→2);
-- **точность (бинарно, held-out): F1 0.943** (P 0.955/R 0.932): p1 0.934, p2 0.967, p3 0.918,
-  DISFOR 0.961; detection: logging 0.963, windfall 0.803, fire 0.950; T=2/3/4 → 0.940/0.945/0.918;
-- скорость: 0.13–0.31 мс/чип CPU, 0.22–0.52 GPU; полная мозаика ≈28 с (CPU).
-- ONNX (0.59 МБ) входит в плагин: `forest_change/model/mask_mini3d.onnx`.
-
-### 2. `masknet.pth` — MaskNet-CK (эксперимент: любое C и любая T) — 155k
-
-- каналы: веса первого слоя **генерируются из длин волн** (как DOFA): `w_c = MLP(λ_c)`;
-- время: **CKConv** (непрерывное ядро `κ(τ)=MLP(τ)`) + CfC — любая T;
-- точность: F1 0.769 (p1 0.346, p2 0.834, p3 0.835, DISFOR 0.851); T=2..36: 0.62–0.81;
-  абляции каналов: C=6 → 0.769, без B12 → 0.273, [B04,B08,B11,B12] → 0.745.
-
-### 3. `typenet_ck.pth` — TypeNet-CK (эксперимент: типы при любом числе фото) — ~250k
-
-- DOFA (frozen, per-date признаки) → CKConv-ветка + CfC-ветка → fusion-голова (4 класса);
-- точность: среди изменённых Vozh — macro-F1 0.411 (logging 0.798, windfall 0.436, fire 0.000);
-  DISFOR 0.541, длинные ряды 0.564; T=2..8 без переобучения;
-- уступает production-fusion (0.938) — см. `MODEL_TYPES_ARCH.md`.
-
-## Ассеты релиза
-
-| файл | размер | что это | куда класть |
+| модель | чекпоинт | размер | ONNX (плагин) |
 |---|---|---|---|
-| `forest_change_fusion128.onnx` | ~426 МБ | **fusion: siamese DOFA + CfC (logit-stack)**, 6 каналов + временная последовательность 4×9, чип 32 px→128 px, 4 класса | `forest_change/model/` в QGIS-плагине v0.3.0+ |
-| `forest_change_dofa128.onnx` | ~426 МБ | siamese DOFA (ViT-B/16), 6 каналов, 4 класса | плагин v0.2.0 |
-| `forest_change_mt_256.onnx` | ~263 МБ | ChangeMamba-Tiny (multi-task: изменение + тип), tile 256, 3 канала B11/B08/B04 | плагин v0.1.x |
-| `space_swir_sqrt_last.pth` | ~125 МБ | Основная 4-классовая ChangeMamba (spatial-протокол, SWIR-композит, sqrt-веса классов) | пайплайн обучения / инференс `vozh_infer.py` |
-| `mt_over2_fold0.pth` | ~125 МБ | Multi-task ChangeMamba с усиленным oversampling ветровала/пожара | пайплайн обучения |
+| Маска (контекст 3×3 + length-aware CfC) | `mask_ctx_conv3_len.pth` | 4.7 МБ | `masknet_encoder.onnx` (5.5 МБ) + `masknet_cfc.onnx` (4.9 МБ) |
+| TypeNet (DOFA-дистиллят 12×768 + CfC 2×256) | `typenet_big_w256_b2.pth` | 8.4 МБ | `typenet_encoder.onnx` (30.3 МБ) + `typenet_cfc.onnx` (10.9 МБ) |
+| Энкодеры (дистилляция DOFA-B) | `encoder_dofa_distilled.pth` (5.4 МБ), `encoder_dofa_distilled_big.pth` (29 МБ) | | |
 
-## Fusion-модель (v1.2, рекомендуется; change задаёт алгоритм)
+Подробные послойные описания и схемы: **[MODEL_MASK_ARCH.md](MODEL_MASK_ARCH.md)**,
+**[MODEL_TYPES_ARCH.md](MODEL_TYPES_ARCH.md)**, диаграммы в [docs/](docs/).
 
-- входы: `pre`, `post` — `(B,6,128,128)` (B02,B03,B04,B08,B11,B12, reflectance/10000),
-  `seq` — `(B,4,9)` (те же 6 каналов + NDVI/NBR/NDMI по четырём датам, усреднённые
-  по чипу 32 px = 320 м);
-- выход: 4 логита — `0 no_change, 1 logging, 2 windfall, 3 fire`;
-- наличие изменения определяется **алгоритмом** (в плагине: попиксельно
-  `|ΔNDVI| > 0.15` или `|ΔNBR| > 0.15`, чип изменён при ≥10 % таких пикселей);
-  сеть вызывается только для изменённых чипов.
+---
 
-### Точность типа среди изменённых чипов (held-out кварталы, 12 002 чипа)
+## 1. Маска: `mask_ctx_conv3_len.pth`
 
-| модель | logging | windfall | fire | macro-F1 (3 типа) |
-|---|---|---|---|---|
-| spatial DOFA | 0.932 | 0.939 | 0.770 | 0.880 |
-| temporal CfC (4 даты) | 0.909 | 0.934 | 0.101 | 0.648 |
-| **FUSION (DOFA+CfC)** | **0.942** | **0.966** | **0.907** | **0.938** |
+**Входы:** `vol` (B,T,6,32,32) — сырой рефлектанс/10000 (clip 0..1.5, без z-норм);
+`dt` (B,T) — годы между датами; `doy` (B,T,3) — (sin DOY, cos DOY, год−2015; для мозаик год=0);
+`lengths` (B,) — число валидных дат; **T динамическое** (2..8).
+**Архитектура:** CnnEncoder (1.41M: λ-стем, свёрнутый при экспорте в 1 dense-Conv(6→48), +
+4 ConvBlock 48→96→192→256→256, GAP → 256-d/дата) + контекст 3×3 (Conv3×3 по фичам соседей,
+маска валидности) + двунаправленный CfC (128, length-aware пулинг: среднее по валидным шагам,
+обратный проход с последней валидной даты) + сводки mean/last−first + голова 1280→256→2.
+**Обучение:** Vozh 6030 чипов, сплит по кварталам, энкодер заморожен; 60 эпох, lr 1.5e-4,
+ctx-drop 0.3; ранний стоп только при явном переобучении (после 30-й эпохи).
 
-Кросс-тесты zero-shot: DISFOR-fusion → Вожегодское 0.101 macro-F1; Вожегодское-fusion
-→ DISFOR (общие классы) 0.210 — домены не переносятся.
+Метрики на всех датасетах (val, бинарно; P/R/F1):
 
-## Параметры DOFA-модели (v0.2.0)
-
-- вход: два тензора `(B, 6, 128, 128)` — pre и post, каналы **B02,B03,B04,B08,B11,B12**;
-- нормализация: `reflectance/10000`; чип на местности — 32 px (320 м), апскейл 32→128;
-- выход: 4 логита — `0 no_change, 1 logging, 2 windfall, 3 fire`;
-- сверка PyTorch ↔ onnxruntime: max|Δ| = 2.2e-06; CPU-инференс, батчами по 64 чипа.
-
-### Точность (Вожегодское лесничество, held-out кварталы)
-
-| уровень | acc | macro-F1 | no_change | logging | windfall | fire |
+| датасет | n | pos | P | R | F1 | примечание |
 |---|---|---|---|---|---|---|
-| чипы (сбалансированно, 12 088) | 0.886 | **0.856** | 0.886 | 0.922 | 0.893 | 0.722 |
-| полная карта p3 (40 кварталов, 1.86M px) | 0.839 | 0.380 | 0.910 | 0.441 | 0.057 | 0.112 |
+| **vozh** (с контекстом) | 1321 | 886 | 0.938 | 0.924 | **0.931** | целевой домен |
+| vozh (пустой контекст) | 1321 | 886 | 0.938 | 0.894 | 0.916 | fallback-режим |
+| big4 (DISFOR pairs) | 9600 | 9600 | 1.000 | 0.166 | 0.284 | zero-shot |
+| california | 3973 | 1471 | 1.000 | 0.001 | 0.001 | zero-shot |
+| pairs (DISFOR) | 439 | 266 | 0.632 | 0.207 | 0.312 | zero-shot |
+| long (DISFOR, T≤8) | 491 | 335 | 0.619 | 0.116 | 0.196 | zero-shot |
 
-Ограничение: модель классифицирует чипы 320 м, разметка попиксельная — крупные
-вырубки уверенно, разреженный ветровал/мелкие пожары на карте теряются.
+- Vozh по периодам: p1 0.925 / p2 0.960 / p3 0.906; clean-val (без пересечения окон кварталов) **0.940**;
+  GT p3 на сцене через плагин: **P 0.966 / R 0.952 / F1 0.959**.
+- Модель обучена на Vozh; zero-shot на DISFOR/California без контекста слабый — для других
+  регионов нужно дообучение.
+- Скорость: энкодер 0.036 мс/чип (DML, батч 512); вся сцена p3 (98 тайлов) — **59–65 с**
+  (энкодер DML + CfC на CPU).
 
-## Параметры ONNX-модели ChangeMamba (v0.1.x)
+## 2. Тип: `typenet_big_w256_b2.pth`
 
-- вход: 2 тензора `(1, 3, 256, 256)`, каналы **B11, B08, B04**;
-- нормализация: `x/10000` → `clip(x/0.35, 0, 1) × 255` → ImageNet mean/std
-  (mean `[123.675, 116.28, 103.53]`, std `[58.395, 57.12, 57.375]`);
-- выход: `concat(change[2], type[3])` — вероятностные логиты бинарного изменения
-  и типа нарушения;
-- классы: `0 no_change, 1 logging, 2 windfall, 3 fire`;
-- сверка PyTorch ↔ onnxruntime: max|Δ| = 7.6e-06.
+**Входы:** `feats` (M,T,768) — замороженный дистиллированный энкодер CnnDofaLike (λ-стем +
+12 depthwise-separable слоёв ×768, дилатации [1,2,4,8]×3, RF≈185); `dt` (M,T) — годы;
+`doy` (M,T,3). **T динамическое** (2..8, ONNX Loop, точные длины).
+**Архитектура:** CfCBiStack ×2 (ширина 256, двунаправленный, mean по T) + сводки
+mean/last−first (1536) → голова 2048→256→3. CfC исполняется на CPU (Loop на DirectML врёт).
+**Обучение:** vozh 6030 + big4 45000 + california 3313 + пары 2079 + длинные 2307 (изменённые чипы,
+3 класса, без no_change); 60 эпох, bs 32, lr 2e-4, CE с весами классов, AUG ×6 для vozh/pairs/long.
 
-## Как использовать
+Метрики (val, per-class F1):
 
-QGIS-плагин (CPU-инференс через `onnxruntime`):
+| датасет | n | logging | windfall | fire | macro |
+|---|---|---|---|---|---|
+| **все** | 9875 | **0.922** | **0.877** | **0.983** | **0.870** |
+| vozh | 886 | 0.944 | 0.698 | — (n=1) | 0.547 |
+| big4 (DISFOR) | 7200 | 0.816 | 0.830 | 0.934 | 0.860 |
+| california | 1471 | — | — | 0.972 | 0.972 |
+| pairs (DISFOR) | 266 | 0.921 | 0.879 | 0.959 | 0.920 |
+| long (DISFOR) | 52 | 0.927 | 0.889 | 1.000 | 0.939 |
 
-1. скачать `forest_change_mt_256.onnx` из Releases;
-2. положить в `forest_change/model/` (рядом с `forest_change_mt_256.json`);
-3. `pip install onnxruntime` в Python QGIS;
-4. запустить плагин и указать путь к модели.
+- GT-чипы p3 через ONNX-пайплайн плагина: recall logging 88% / windfall 94%.
+- Слабое место: vozh windfall (0.698).
+- Скорость: энкодер ~2.4 мс/чип-дата (DML); типы p3 (13 385 клеток) — **177 с cold / 43 с warm**
+  (дисковый кэш фич, ключ = даты + энкодер + mtime данных).
 
-## Метрики (для справки)
+## 3. Код (`code/`)
 
-Patch-level, пространственный 3-fold CV на наборе Вожегодского лесничества
-(Вологодская обл.), held-out кварталы:
-
-| класс | F1 |
+| файл | что это |
 |---|---|
-| no_change | 0.989 ± 0.004 |
-| logging | **0.934 ± 0.002** |
-| windfall | 0.620 ± 0.034 (multi-task + oversample: 0.755 ± 0.020) |
-| fire | 0.827 ± 0.058 |
+| `masknet_v2.py` | CnnEncoder (маска), BandConvStem, ConvBlock, MaskNetV2 |
+| `cfc.py` | CfCCell, CfCBiEncoderPN (length-aware), CfCBiStack |
+| `typenet_v3.py`, `typenet_big.py` | CnnDofaLike (энкодер типов), TypeNetFeats (CfC-голова) |
+| `exp_ctx_mask.py` | FeatMaskNet (контекст 3×3) + тренер маски |
+| `build_vozh_ctx.py` | контекстный датасет маски (сетка фич малого энкодера) |
+| `train_big.py`, `distill_encoder.py` | обучение маски и дистилляция энкодера |
+| `train_typenet_big.py`, `extract_typenet_feats.py`, `eval_typenet_big.py` | TypeNet: тренер, кэш фич, оценка |
+| `eval_mask_all.py` | оценка маски на всех датасетах |
+| `onnx_opt.py` | фолд λ-стема (6 свёрток → одна dense-Conv) |
+| `export_onnx_mask_ctx.py`, `export_onnx_new.py` | экспорт ONNX (маска; типы с динамическим T) |
+| `draw_arch.py` | блок-схемы архитектур |
 
-Полноразмерная карта (held-out кварталы): logging F1 0.932, IoU 0.873.
+**Воспроизведение:**
+```bash
+python code/build_vozh_ctx.py --with-big-center       # контекстные датасеты
+python code/exp_ctx_mask.py --ctx conv --k 3          # маска (length-aware)
+python code/train_typenet_big.py --width 256 --blocks 2 \
+    --head-width 256 --head-mode summary              # TypeNet
+python code/export_onnx_mask_ctx.py                   # ONNX маски (динамическое T)
+python code/export_onnx_new.py                        # ONNX типов (динамическое T)
+```
 
-## Обучение (кратко)
+**Данные:** Vozh — `dataset.csv` + мозаики `outputs/vozh/mosaic`; DISFOR — `G:/datasets/unified/big4_chips.npz`;
+California — `california.npz`; длинные ряды — `binary_long.npz`; пары — `binary_ds.npz`;
+кэши фич типов — `tn_{vozh,big4,cal,pairs,long}.npz`.
 
-ChangeMamba (VMamba-Tiny) + 4-классовая голова / multi-task голова;
-чисто-PyTorch реализация selective scan (запуск без CUDA-ядер, в т.ч. на ROCm);
-CfC (liquid neural network) — как отдельная временная модель и для
-рекуррентной глубины.
+## Примечания
+
+- Старые модели (MaskNet-CK, TypeNet-CK, production 3D-CNN+CfC, fusion DOFA+CfC, промежуточные
+  варианты) удалены из репозитория.
+- Воспроизводимость: детерминированные сиды (0), скрипты в `code/`, конфиги — в CLI-аргументах.
