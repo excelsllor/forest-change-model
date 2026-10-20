@@ -2,15 +2,15 @@
 
 Финальные модели задачи выявления и классификации лесных изменений (вырубка / ветровал /
 пожар) по Sentinel-2 для QGIS-плагина [`forest-change-qgis`](https://github.com/excelsllor/forest-change-qgis)
-(v0.15+). Веса лежат в git (все файлы < 100 МБ), ONNX-экспорты — в git плагина.
+(v0.15+). Веса лежат в git (все файлы < 100 МБ).
 
 Два шага: **маска изменения** (бинарно) → **тип** (logging / windfall / fire).
 
-| модель | чекпоинт | размер | ONNX (плагин) |
-|---|---|---|---|
-| Маска (контекст 3×3 + length-aware CfC) | `mask_ctx_conv3_len.pth` | 4.7 МБ | `masknet_encoder.onnx` (5.5 МБ) + `masknet_cfc.onnx` (4.9 МБ) |
-| TypeNet (DOFA-дистиллят 12×768 + CfC 2×256) | `typenet_big_w256_b2.pth` | 8.4 МБ | `typenet_encoder.onnx` (30.3 МБ) + `typenet_cfc.onnx` (10.9 МБ) |
-| Энкодеры (дистилляция DOFA-B) | `encoder_dofa_distilled.pth` (5.4 МБ), `encoder_dofa_distilled_big.pth` (29 МБ) | | |
+| модель | чекпоинт | размер |
+|---|---|---|
+| Маска (контекст 3×3 + length-aware CfC) | `mask_ctx_conv3_len.pth` | 4.7 МБ |
+| TypeNet (DOFA-дистиллят 12×768 + CfC 2×256) | `typenet_big_w256_b2.pth` | 8.4 МБ |
+| Энкодеры (дистилляция DOFA-B) | `encoder_dofa_distilled.pth`, `encoder_dofa_distilled_big.pth` | 5.4 + 29 МБ |
 
 Подробные послойные описания и схемы: **[MODEL_MASK_ARCH.md](MODEL_MASK_ARCH.md)**,
 **[MODEL_TYPES_ARCH.md](MODEL_TYPES_ARCH.md)**, диаграммы в [docs/](docs/).
@@ -26,7 +26,7 @@
 **Входы:** `vol` (B,T,6,32,32) — сырой рефлектанс/10000 (clip 0..1.5, без z-норм);
 `dt` (B,T) — годы между датами; `doy` (B,T,3) — (sin DOY, cos DOY, год−2015; для мозаик год=0);
 `lengths` (B,) — число валидных дат; **T динамическое** (2..8).
-**Архитектура:** CnnEncoder (1.41M: λ-стем, свёрнутый при экспорте в 1 dense-Conv(6→48), +
+**Архитектура:** CnnEncoder (1.41M: λ-стем, свёрнутый в 1 dense-Conv(6→48), +
 4 ConvBlock 48→96→192→256→256, GAP → 256-d/дата) + контекст 3×3 (Conv3×3 по фичам соседей,
 маска валидности) + двунаправленный CfC (128, length-aware пулинг: среднее по валидным шагам,
 обратный проход с последней валидной даты) + сводки mean/last−first + голова 1280→256→2.
@@ -55,9 +55,9 @@ ctx-drop 0.3; ранний стоп только при явном переоб�
 
 **Входы:** `feats` (M,T,768) — замороженный дистиллированный энкодер CnnDofaLike (λ-стем +
 12 depthwise-separable слоёв ×768, дилатации [1,2,4,8]×3, RF≈185); `dt` (M,T) — годы;
-`doy` (M,T,3). **T динамическое** (2..8, ONNX Loop, точные длины).
+`doy` (M,T,3). **T динамическое** (2..8, точные длины).
 **Архитектура:** CfCBiStack ×2 (ширина 256, двунаправленный, mean по T) + сводки
-mean/last−first (1536) → голова 2048→256→3. CfC исполняется на CPU (Loop на DirectML врёт).
+mean/last−first (1536) → голова 2048→256→3. CfC исполняется на CPU.
 **Обучение:** vozh 6030 + big4 45000 + california 3313 + пары 2079 + длинные 2307 (изменённые чипы,
 3 класса, без no_change); 60 эпох, bs 32, lr 2e-4, CE с весами классов, AUG ×6 для vozh/pairs/long.
 
@@ -72,7 +72,7 @@ mean/last−first (1536) → голова 2048→256→3. CfC исполняет
 | pairs (DISFOR) | 266 | 0.921 | 0.879 | 0.959 | 0.920 |
 | long (DISFOR) | 52 | 0.927 | 0.889 | 1.000 | 0.939 |
 
-- GT-чипы p3 через ONNX-пайплайн плагина: recall logging 88% / windfall 94%.
+- GT-чипы p3 через пайплайн плагина: recall logging 88% / windfall 94%.
 - Слабое место: vozh windfall (0.698).
 - Скорость: энкодер ~2.4 мс/чип-дата (DML); типы p3 (13 385 клеток) — **177 с cold / 43 с warm**
   (дисковый кэш фич, ключ = даты + энкодер + mtime данных).
@@ -89,8 +89,6 @@ mean/last−first (1536) → голова 2048→256→3. CfC исполняет
 | `train_big.py`, `distill_encoder.py` | обучение маски и дистилляция энкодера |
 | `train_typenet_big.py`, `extract_typenet_feats.py`, `eval_typenet_big.py` | TypeNet: тренер, кэш фич, оценка |
 | `eval_mask_all.py` | оценка маски на всех датасетах |
-| `onnx_opt.py` | фолд λ-стема (6 свёрток → одна dense-Conv) |
-| `export_onnx_mask_ctx.py`, `export_onnx_new.py` | экспорт ONNX (маска; типы с динамическим T) |
 | `draw_arch.py` | блок-схемы архитектур |
 
 **Воспроизведение:**
@@ -99,8 +97,6 @@ python code/build_vozh_ctx.py --with-big-center       # контекстные �
 python code/exp_ctx_mask.py --ctx conv --k 3          # маска (length-aware)
 python code/train_typenet_big.py --width 256 --blocks 2 \
     --head-width 256 --head-mode summary              # TypeNet
-python code/export_onnx_mask_ctx.py                   # ONNX маски (динамическое T)
-python code/export_onnx_new.py                        # ONNX типов (динамическое T)
 ```
 
 **Данные:** Vozh — `dataset.csv` + мозаики `outputs/vozh/mosaic`; DISFOR — `G:/datasets/unified/big4_chips.npz`;
