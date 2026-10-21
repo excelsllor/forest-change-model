@@ -1,8 +1,9 @@
-"""Evaluate the final context mask (conv3, length-aware) on all datasets.
+"""Evaluate the final context mask on all datasets.
 
 vozh      - with 3x3 context (the standard val, exact lengths)
 big4/cal/pairs/long - without context (zero-shot; the model's ctx-drop fallback path)
 """
+import argparse
 import os
 import sys
 
@@ -22,13 +23,17 @@ from exp_ctx_mask import FeatMaskNet  # noqa: E402
 from masknet_v2 import CnnEncoder, WL6, band_weights  # noqa: E402
 
 dev = torch.device("cuda")
+ap = argparse.ArgumentParser()
+ap.add_argument("--ctx", default="attn", choices=("conv", "attn"))
+ap.add_argument("--ckpt", default="mask_ctx_attn3_len.pth")
+args = ap.parse_args()
 wl = band_weights(WL6).to(dev)
 enc = CnnEncoder().to(dev)
 enc.load_state_dict(torch.load(os.path.join(EVAL, "encoder_dofa_distilled.pth"),
                                map_location="cpu"))
 enc.eval()
-model = FeatMaskNet("conv", 3, ctx_width=256).to(dev)
-model.load_state_dict(torch.load(os.path.join(OUT, "mask_ctx_conv3_len.pth"),
+model = FeatMaskNet(args.ctx, 3, ctx_width=256).to(dev)
+model.load_state_dict(torch.load(os.path.join(OUT, args.ckpt),
                                  map_location="cpu"))
 model.eval()
 

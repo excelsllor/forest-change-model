@@ -90,6 +90,7 @@ def main():
     ap.add_argument("--blocks", type=int, default=2)
     ap.add_argument("--head-width", type=int, default=64)
     ap.add_argument("--head-mode", default="plain", choices=("plain", "summary"))
+    ap.add_argument("--readout", default="cfc", choices=("cfc", "attn"))
     ap.add_argument("--spec", action="store_true", help="feed pooled spectral indices (9/date)")
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--bs", type=int, default=32)
@@ -122,11 +123,11 @@ def main():
 
     model = TypeNetFeats(cfc_width=args.width, blocks=args.blocks,
                          head_width=args.head_width, head_mode=args.head_mode,
-                         use_spec=args.spec).to(dev)
+                         use_spec=args.spec, readout=args.readout).to(dev)
     n_seq = sum(p.numel() for p in model.parameters())
-    print(f"[tnt] width={args.width} blocks={args.blocks} head={args.head_mode}/{args.head_width} "
-          f"| seq+head {n_seq / 1e6:.2f}M | encoder (frozen, cached) 7.58M | "
-          f"total {7.58 + n_seq / 1e6:.2f}M", flush=True)
+    print(f"[tnt] width={args.width} blocks={args.blocks} readout={args.readout} "
+          f"head={args.head_mode}/{args.head_width} | seq+head {n_seq / 1e6:.2f}M | "
+          f"encoder (frozen, cached) 7.58M | total {7.58 + n_seq / 1e6:.2f}M", flush=True)
 
     val_pairs = [(s, int(i)) for s in range(len(srcs))
                  for i in np.where(srcs[s]["split"] == "val")[0]]
@@ -206,7 +207,8 @@ def main():
     res = {"width": args.width, "blocks": args.blocks, "best_val_macro_f1": best["f1"],
            "best_epoch": best["epoch"], "seq_head_params": int(n_seq),
            "encoder_params": 7580000, "epochs": args.epochs,
-           "head_width": args.head_width, "head_mode": args.head_mode, "spec": args.spec}
+           "head_width": args.head_width, "head_mode": args.head_mode, "spec": args.spec,
+           "readout": args.readout}
     for s in range(len(srcs)):
         m = np.array([p[0] == s for p in val_pairs])
         if m.sum():

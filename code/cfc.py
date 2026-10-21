@@ -116,9 +116,17 @@ class CfCBiEncoderPN(nn.Module):
     """
 
     def __init__(self, input_size, hidden_size, backbone_units=64, backbone_layers=2,
-                 dt_mode="seq"):
+                 dt_mode="seq", n_cont=0, cont_mode="inline"):
         super().__init__()
-        self.norm = nn.LayerNorm(input_size)
+        self.n_cont = n_cont
+        self.cont_mode = cont_mode
+        self.n_emb = input_size - n_cont if (n_cont and cont_mode == "sep") else input_size
+        self.norm = nn.LayerNorm(self.n_emb)
+        if n_cont and cont_mode == "sep":
+            self.sc_proj = nn.Sequential(nn.Linear(n_cont, 4 * n_cont), nn.GELU(),
+                                         nn.Linear(4 * n_cont, n_cont))
+        else:
+            self.sc_proj = nn.Identity()
         self.in_proj = nn.Linear(input_size, hidden_size)
         self.fwd = CfCCell(hidden_size, hidden_size, backbone_units, backbone_layers)
         self.bwd = CfCCell(hidden_size, hidden_size, backbone_units, backbone_layers)
@@ -155,7 +163,13 @@ class CfCBiEncoderPN(nn.Module):
     def forward(self, x, dt, lengths=None):
         if dt.dim() == 1:
             dt = dt.unsqueeze(0).expand(x.shape[0], -1)
-        xp = self.in_proj(self.norm(x))
+        if self.n_cont and self.cont_mode == "sep":
+            u = self.norm(x[:, :, :self.n_emb])
+            s = self.sc_proj(x[:, :, self.n_emb:])
+            xin = torch.cat([u, s], dim=-1)
+        else:
+            xin = self.norm(x)
+        xp = self.in_proj(xin)
         dtn = self.norm_dt(dt)
         if lengths is None:
             yf = xp + self._direction(self.fwd, xp, dtn, False)

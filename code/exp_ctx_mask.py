@@ -5,6 +5,7 @@ of the k x k neighbourhood per date. Train/eval on vozh only (held-out quarters)
 """
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -33,11 +34,59 @@ class CtxConv(nn.Module):
         self.conv = nn.Sequential(nn.Conv2d(DIM + 1, dim, k, padding=pad),
                                   nn.GroupNorm(8, dim), nn.GELU())
 
-    def forward(self, ctx, valid):
+    def forward(self, center, ctx, valid):
         ctx = ctx * valid.unsqueeze(-1)                  # ignore empty neighbour patches
         x = torch.cat([ctx, valid.unsqueeze(-1)], dim=-1).permute(0, 3, 1, 2)
         y = self.conv(x)
         return y[:, :, 0, 0] if self.k % 2 == 0 else y[:, :, self.k // 2, self.k // 2]
+
+
+class CtxAttn(nn.Module):
+    """Cross-attention context: the centre token queries the k x k neighbourhood.
+
+    Same interface/role as CtxConv (outputs a 256-d context vector per date), so the
+    comparison isolates conv vs attention in the compute part (encoder stays frozen).
+    Invalid neighbours are masked; a sample with no valid context falls back to the
+    centre slot and the attention output is zeroed.
+    """
+    def __init__(self, k, dim=256, heads=8, ffn=512):
+        super().__init__()
+        self.k = k
+        self.h = heads
+        self.dh = dim // heads
+        self.nq = nn.LayerNorm(DIM)
+        self.nkv = nn.LayerNorm(DIM)
+        self.q = nn.Linear(DIM, dim)
+        self.kv = nn.Linear(DIM, 2 * dim)
+        self.o = nn.Linear(dim, dim)
+        self.slot = nn.Parameter(torch.zeros(k * k, dim))
+        nn.init.normal_(self.slot, std=0.02)
+        self.n1 = nn.LayerNorm(dim)
+        self.ffn = nn.Sequential(nn.Linear(dim, ffn), nn.GELU(), nn.Linear(ffn, dim))
+        self.n2 = nn.LayerNorm(dim)
+
+    def forward(self, center, ctx, valid):
+        b = center.shape[0]
+        n = self.k * self.k
+        d = ctx.shape[-1]
+        q = self.q(self.nq(center)).reshape(b, 1, self.h, self.dh).transpose(1, 2)
+        kv = self.kv(self.nkv(ctx.reshape(b, n, d)) + self.slot.unsqueeze(0))
+        kv = kv.reshape(b, n, 2, self.h, self.dh).permute(2, 0, 3, 1, 4)
+        kk, vv = kv[0], kv[1]
+        m = valid.reshape(b, n) != 0
+        anyv = m.any(dim=1, keepdim=True)
+        q = self.q(self.nq(center)).reshape(b, 1, self.h, self.dh).transpose(1, 2)
+        kv = self.kv(self.nkv(ctx.reshape(b, n, d)) + self.slot.unsqueeze(0))
+        kv = kv.reshape(b, n, 2, self.h, self.dh).permute(2, 0, 3, 1, 4)
+        kk, vv = kv[0], kv[1]
+        scores = torch.matmul(q, kk.transpose(-1, -2)) / math.sqrt(self.dh)
+        scores = torch.where(m[:, None, None, :], scores, torch.full_like(scores, -1e9))
+        w = torch.softmax(scores, dim=-1)
+        att = torch.matmul(w, vv)
+        out = self.o(att.transpose(1, 2).reshape(b, -1)) * anyv.float()
+        x = center + out
+        x = x + self.ffn(self.n1(x))
+        return self.n2(x)
 
 
 class CtxRaw(nn.Module):
@@ -53,7 +102,7 @@ class CtxRaw(nn.Module):
         self.proj = nn.Sequential(nn.Linear(k * k * (DIM + 2), dim), nn.GELU(),
                                   nn.Linear(dim, dim))
 
-    def forward(self, ctx, valid):
+    def forward(self, center, ctx, valid):
         b = ctx.shape[0]
         x = ctx.reshape(b, self.k * self.k, 256) + self.slot.unsqueeze(0)
         x = x * valid.reshape(b, self.k * self.k, 1)
@@ -63,12 +112,16 @@ class CtxRaw(nn.Module):
 
 class FeatMaskNet(nn.Module):
     def __init__(self, ctx_mode="none", k=3, cfc_hidden=128, head_width=256, ctx_width=256,
-                 ctx_drop=0.2, use_spec=False):
+                 ctx_drop=0.2, use_spec=False, cont_mode="inline"):
         super().__init__()
         self.ctx_mode = ctx_mode
         self.k = k
+        self.cont_mode = cont_mode
         if ctx_mode == "conv":
             self.ctx_net = CtxConv(k, ctx_width)
+            d_ctx = ctx_width
+        elif ctx_mode == "attn":
+            self.ctx_net = CtxAttn(k, ctx_width)
             d_ctx = ctx_width
         elif ctx_mode == "raw":
             self.ctx_net = CtxRaw(k, ctx_width)
@@ -81,7 +134,7 @@ class FeatMaskNet(nn.Module):
         self.use_spec = use_spec
         self.seq = CfCBiEncoderPN(DIM + d_ctx + 4 + (9 if use_spec else 0), cfc_hidden,
                                   backbone_units=cfc_hidden, backbone_layers=2,
-                                  dt_mode="seq")
+                                  dt_mode="seq", n_cont=4, cont_mode=cont_mode)
         h_in = 2 * cfc_hidden + 2 * DIM + (2 * d_ctx if d_ctx else 0) + (18 if use_spec else 0)
         self.head = nn.Sequential(nn.LayerNorm(h_in), nn.Linear(h_in, head_width), nn.GELU(),
                                   nn.Dropout(0.2), nn.Linear(head_width, 2))
@@ -91,7 +144,9 @@ class FeatMaskNet(nn.Module):
     def forward(self, center, ctx, valid, dt, doy, lengths=None, spec=None):
         b, t = center.shape[:2]
         if self.d_ctx:
-            ctx_vec = self.ctx_net(ctx.reshape(b * t, self.k, self.k, 256),
+            d = center.shape[-1]
+            ctx_vec = self.ctx_net(center.reshape(b * t, d),
+                                   ctx.reshape(b * t, self.k, self.k, 256),
                                    valid.reshape(b * t, self.k, self.k)).reshape(b, t, -1)
             ctx_vec = self.ctx_drop(ctx_vec)
         else:
@@ -115,7 +170,7 @@ class FeatMaskNet(nn.Module):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ctx", default="none", choices=("none", "conv", "raw"))
+    ap.add_argument("--ctx", default="none", choices=("none", "conv", "attn", "raw"))
     ap.add_argument("--k", type=int, default=3, choices=(3, 5, 6))
     ap.add_argument("--ctx-width", type=int, default=256)
     ap.add_argument("--epochs", type=int, default=60)
@@ -132,6 +187,9 @@ def main():
                     help="no early stop before this epoch")
     ap.add_argument("--ctx-drop", type=float, default=0.3,
                     help="probability of blanking the whole context (fallback training)")
+    ap.add_argument("--cont", default="inline", choices=("inline", "sep"),
+                    help="LayerNorm over all inputs (inline) or only the 512 embeddings, "
+                         "scalars via a small MLP (sep)")
     ap.add_argument("--spec", action="store_true", help="feed pooled spectral indices (9/date)")
     ap.add_argument("--clean-split", action="store_true",
                     help="drop train/val chips whose k-window crosses the split")
@@ -195,10 +253,10 @@ def main():
           f"val={int(va.sum())}", flush=True)
 
     model = FeatMaskNet(args.ctx, args.k, ctx_width=args.ctx_width,
-                        ctx_drop=args.dropout, use_spec=args.spec).to(dev)
+                        ctx_drop=args.dropout, use_spec=args.spec, cont_mode=args.cont).to(dev)
     n_par = sum(p.numel() for p in model.parameters())
-    print(f"[ctx] params {n_par / 1e6:.2f}M (ctx {model.d_ctx}d, mode {args.ctx}{args.k})",
-          flush=True)
+    print(f"[ctx] params {n_par / 1e6:.2f}M (ctx {model.d_ctx}d, mode {args.ctx}{args.k}, "
+          f"cont {args.cont})", flush=True)
 
     # ---- data-flow audit: shapes + empirical sensitivity to the context
     model.eval()
@@ -211,7 +269,7 @@ def main():
         y0 = torch.zeros(b, 4, 3, device=dev)
         s0 = torch.zeros(b, 4, 9, device=dev)
         o0 = model(c0, x0, v0, d0, y0, None, s0)
-        x1 = x0.clone(); x1[:, 0, k // 2 if k % 2 else 0, k // 2 if k % 2 else 0] += 1.0
+        x1 = x0.clone(); x1[:, 0, k // 2 if k % 2 else 0, k // 2 if k % 2 else 0, 0] += 1.0
         o1 = model(c0, x1, v0, d0, y0, None, s0)
         o2 = model(c0, torch.zeros_like(x0), v0, d0, y0, None, s0)
         head_in = 2 * 128 + 2 * DIM + 2 * model.d_ctx
@@ -330,7 +388,8 @@ def main():
           f"per={per} (best ep{best['epoch']})", flush=True)
     res = {"ctx": args.ctx, "k": args.k, "val_f1": f1, "precision": prec, "recall": rec,
            "per_period": per, "params": int(n_par), "n_val": int(va.sum()),
-           "best_epoch": best["epoch"], "ctx_width": args.ctx_width, "spec": args.spec}
+           "best_epoch": best["epoch"], "ctx_width": args.ctx_width, "spec": args.spec,
+           "cont": args.cont}
     with open(os.path.join(OUT, f"mask_ctx_{args.ctx}{args.k}_{args.tag or 'seed0'}.json"), "w",
               encoding="utf-8") as fh:
         json.dump(res, fh, indent=2, ensure_ascii=False)

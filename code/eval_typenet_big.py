@@ -27,6 +27,7 @@ def main():
     ap.add_argument("--blocks", type=int, default=2)
     ap.add_argument("--head-width", type=int, default=64)
     ap.add_argument("--head-mode", default="plain", choices=("plain", "summary"))
+    ap.add_argument("--readout", default="cfc", choices=("cfc", "attn"))
     ap.add_argument("--spec", action="store_true")
     args = ap.parse_args()
 
@@ -34,7 +35,7 @@ def main():
     srcs = load_all()
     model = TypeNetFeats(cfc_width=args.width, blocks=args.blocks,
                          head_width=args.head_width, head_mode=args.head_mode,
-                         use_spec=args.spec).to(dev)
+                         use_spec=args.spec, readout=args.readout).to(dev)
     model.load_state_dict(torch.load(os.path.join(EVAL, args.ckpt), map_location="cpu"))
     val_pairs = [(s, int(i)) for s in range(len(srcs))
                  for i in np.where(srcs[s]["split"] == "val")[0]]

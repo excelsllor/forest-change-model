@@ -1,10 +1,12 @@
 """Export the context mask to ONNX: small encoder + length-aware CfC with dynamic T.
 
+Mask context = cross-attention (centre queries the 3x3 neighbourhood), dynamic T.
 Outputs into qgis_plugin/forest_change/model/:
   masknet_encoder.onnx - CnnEncoder (distilled), vol (M,6,32,32) -> feats (M,256)
-  masknet_cfc.onnx     - FeatMaskNet conv3, feats/ctx/valid/dt/doy/lengths -> logits
+  masknet_cfc.onnx     - FeatMaskNet attn3, feats/ctx/valid/dt/doy/lengths -> logits
                          T is dynamic (ONNX Loop), lengths = valid dates per sample
 """
+import argparse
 import os
 import sys
 
@@ -33,7 +35,34 @@ class EncWrap(torch.nn.Module):
         return self.enc(v[:, None], self.wl)[:, 0]
 
 
+class CfcWrap(torch.nn.Module):
+    """Explicit 6-arg signature (no optional args) so the ONNX exporter sees no None."""
+    def __init__(self, m):
+        super().__init__()
+        self.m = m
+
+    def forward(self, feats, ctx, valid, dt, doy, lengths):
+        return self.m(feats, ctx, valid, dt, doy, lengths)
+
+
+def strip_unused_input(path, name):
+    import onnx
+    mm = onnx.load(path)
+    used = {i for n in mm.graph.node for i in n.input}
+    if name not in used:
+        for inp in list(mm.graph.input):
+            if inp.name == name:
+                mm.graph.input.remove(inp)
+        onnx.save(mm, path)
+        return True
+    return False
+
+
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--ctx", default="attn", choices=("conv", "attn"))
+    ap.add_argument("--ckpt", default="mask_ctx_attn3_len.pth")
+    args = ap.parse_args()
     os.makedirs(PLUGIN_MODEL, exist_ok=True)
     import onnxruntime as ort
 
@@ -64,9 +93,8 @@ def main():
     print(f"[onnx] enc  max|diff| = {np.abs(out - ref).max():.2e}", flush=True)
 
     # ---------------- length-aware CfC (dynamic T)
-    m = FeatMaskNet("conv", 3, ctx_width=256)
-    m.load_state_dict(torch.load(os.path.join(OUT, "mask_ctx_conv3_len.pth"),
-                                 map_location="cpu"))
+    m = FeatMaskNet(args.ctx, 3, ctx_width=256)
+    m.load_state_dict(torch.load(os.path.join(OUT, args.ckpt), map_location="cpu"))
     m.eval()
     sm = torch.jit.script(m)
 
@@ -82,16 +110,18 @@ def main():
         return f, c, v, d, do, L
 
     path = os.path.join(PLUGIN_MODEL, "masknet_cfc.onnx")
-    args = mk(2, 3)
+    args = mk(2, 3) + (torch.zeros(2, 3, 9),)
     torch.onnx.export(sm, args, path,
-                      input_names=["feats", "ctx", "valid", "dt", "doy", "lengths"],
+                      input_names=["feats", "ctx", "valid", "dt", "doy", "lengths", "spec"],
                       output_names=["logits"], opset_version=17, do_constant_folding=True,
                       dynamic_axes={"feats": {0: "B", 1: "T"}, "ctx": {0: "B", 1: "T"},
                                     "valid": {0: "B", 1: "T"}, "dt": {0: "B", 1: "T"},
-                                    "doy": {0: "B", 1: "T"}, "lengths": {0: "B"}},
+                                    "doy": {0: "B", 1: "T"}, "lengths": {0: "B"},
+                                    "spec": {0: "B", 1: "T"}},
                       dynamo=False)
-    print(f"[onnx] masknet_cfc.onnx: {os.path.getsize(path) / 1e6:.1f} MB (dynamic T)",
-          flush=True)
+    removed = strip_unused_input(path, "spec")
+    print(f"[onnx] masknet_cfc.onnx: {os.path.getsize(path) / 1e6:.1f} MB (dynamic T, "
+          f"unused spec {'stripped' if removed else 'used'})", flush=True)
     sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
     for T, lens in ((2, None), (3, None), (4, None), (8, None), (5, [5, 3])):
         B = 2 if lens is None else 2

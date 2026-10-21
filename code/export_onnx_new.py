@@ -1,13 +1,13 @@
-"""Export the two new models to ONNX and verify against PyTorch.
+"""Export TypeNet (big encoder + attention readout) to ONNX and verify against PyTorch.
 
-1) mask  : MaskNetV2(bicfcpn, cnn)         vol(B,8,6,32,32) + dt(B,8) + doy(B,8,3) -> logits(B,2)
-2) encoder: CnnDofaLike 12x768 (dilated)   vol(B,6,32,32) -> feats(B,768)
-3) typenet: TypeNetFeats 2x256             feats(B,8,768) + dt(B,8) + doy(B,8,3) -> logits(B,3)
+1) encoder: CnnDofaLike 12x768 (dilated)   vol(B,6,32,32) -> feats(B,768)
+2) typenet: TypeNetFeats (cross-attention readout)  feats(B,T,768) + dt(B,T) + doy(B,T,3) -> logits(B,3)
 
-Outputs into qgis_plugin/forest_change/model/: masknet_v2_cfc.onnx, typenet_encoder.onnx,
-typenet_cfc.onnx. Verification on real val samples with onnxruntime CPU.
+Outputs into qgis_plugin/forest_change/model/: typenet_encoder.onnx, typenet_cfc.onnx.
+Verification on random and real val samples with onnxruntime CPU.
 """
 
+import argparse
 import os
 import sys
 
@@ -20,22 +20,11 @@ EVAL = os.path.join(ROOT, "outputs", "vozh", "mask_eval")
 PLUGIN_MODEL = os.path.join(ROOT, "qgis_plugin", "forest_change", "model")
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
-from masknet_v2 import MaskNetV2, WL6, band_weights  # noqa: E402
+from masknet_v2 import WL6, band_weights  # noqa: E402
 from typenet_v3 import CnnDofaLike  # noqa: E402
 from typenet_big import TypeNetFeats  # noqa: E402
 from onnx_opt import fold_stem_  # noqa: E402
-
-MASK_T = 8
-
-
-class MaskWrap(nn.Module):
-    def __init__(self, m):
-        super().__init__()
-        self.m = m
-        self.register_buffer("wl", band_weights(WL6))
-
-    def forward(self, vol, dt, doy):
-        return self.m(vol, self.wl, dt, doy)
+from export_onnx_mask_ctx import strip_unused_input  # noqa: E402
 
 
 class EncWrap(nn.Module):
@@ -49,7 +38,8 @@ class EncWrap(nn.Module):
         return self.enc(v[:, None], self.wl)[:, 0]
 
 
-class CfCWrap(nn.Module):
+class TypeWrap(nn.Module):
+    """Explicit 3-arg signature (no optional spec) for a clean ONNX graph."""
     def __init__(self, m):
         super().__init__()
         self.m = m
@@ -67,36 +57,14 @@ def export(model, args, path, names, dynamic):
 
 
 def main():
-    import json
-    os.makedirs(PLUGIN_MODEL, exist_ok=True)
-    dev = torch.device("cpu")
-
-    # ---------------- 1) mask
-    with open(os.path.join(EVAL, "masknet_v2_bicfcpn_big.json"), encoding="utf-8") as fh:
-        mask_meta = json.load(fh)
-    mask_hw = int(mask_meta.get("head_width", 64))
-    mask_hm = mask_meta.get("head_mode", "plain")
-    print(f"[onnx] mask head {mask_hm}/{mask_hw}", flush=True)
-    m = MaskNetV2(seq="bicfcpn", enc="cnn", head_width=mask_hw, head_mode=mask_hm)
-    m.load_state_dict(torch.load(os.path.join(EVAL, "masknet_v2_bicfcpn_big.pth"),
-                                 map_location="cpu"))
-    m.eval()
-    mw = MaskWrap(m).eval()
-    vol = torch.randn(2, MASK_T, 6, 32, 32) * 0.3
-    dt = torch.zeros(2, MASK_T)
-    dt[:, 1] = 0.7
-    doy = torch.randn(2, MASK_T, 3) * 0.3
-    with torch.no_grad():
-        ref = mw(vol, dt, doy).numpy()
-    export(mw, (vol, dt, doy), os.path.join(PLUGIN_MODEL, "masknet_v2_cfc.onnx"),
-           ["vol", "dt", "doy"], {"vol": {0: "B"}, "dt": {0: "B"}, "doy": {0: "B"}})
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--readout", default="attn", choices=("cfc", "attn"))
+    ap.add_argument("--ckpt", default="typenet_big_w256_b2_attn.pth")
+    args = ap.parse_args()
     import onnxruntime as ort
-    sess = ort.InferenceSession(os.path.join(PLUGIN_MODEL, "masknet_v2_cfc.onnx"),
-                                providers=["CPUExecutionProvider"])
-    out = sess.run(None, {"vol": vol.numpy(), "dt": dt.numpy(), "doy": doy.numpy()})[0]
-    print(f"[onnx] mask  max|diff| = {np.abs(out - ref).max():.2e}", flush=True)
+    os.makedirs(PLUGIN_MODEL, exist_ok=True)
 
-    # ---------------- 2) encoder
+    # ---------------- 1) encoder
     enc = CnnDofaLike(768, layers=12)
     enc.load_state_dict(torch.load(os.path.join(EVAL, "encoder_dofa_distilled_big.pth"),
                                    map_location="cpu"))
@@ -118,15 +86,10 @@ def main():
     out = sess.run(None, {"vol": x.numpy()})[0]
     print(f"[onnx] enc   max|diff| = {np.abs(out - ref).max():.2e}", flush=True)
 
-    # ---------------- 3) typenet CfC
-    with open(os.path.join(EVAL, "typenet_big_w256_b2.json"), encoding="utf-8") as fh:
-        meta = json.load(fh)
-    head_width = int(meta.get("head_width", 64))
-    head_mode = meta.get("head_mode", "plain")
-    print(f"[onnx] typenet head {head_mode}/{head_width}", flush=True)
-    tm = TypeNetFeats(cfc_width=256, blocks=2, head_width=head_width, head_mode=head_mode)
-    tm.load_state_dict(torch.load(os.path.join(EVAL, "typenet_big_w256_b2.pth"),
-                                  map_location="cpu"))
+    # ---------------- 2) typenet readout
+    tm = TypeNetFeats(cfc_width=256, blocks=2, head_width=256, head_mode="summary",
+                      use_spec=False, readout=args.readout)
+    tm.load_state_dict(torch.load(os.path.join(EVAL, args.ckpt), map_location="cpu"))
     tm.eval()
     tw = torch.jit.script(tm)
     feats = torch.randn(2, 3, 768) * 0.5
@@ -134,26 +97,43 @@ def main():
     dt[:, 1] = 0.7
     dt[:, 2] = 1.1
     doy = torch.randn(2, 3, 3) * 0.3
+    spec = torch.zeros(2, 3, 9)
     with torch.no_grad():
         ref = tw(feats, dt, doy).numpy()
-    torch.onnx.export(tw, (feats, dt, doy), os.path.join(PLUGIN_MODEL, "typenet_cfc.onnx"),
-                      input_names=["feats", "dt", "doy"], output_names=["logits"],
+    torch.onnx.export(tw, (feats, dt, doy, spec), os.path.join(PLUGIN_MODEL, "typenet_cfc.onnx"),
+                      input_names=["feats", "dt", "doy", "spec"], output_names=["logits"],
                       opset_version=17, do_constant_folding=True, dynamo=False,
                       dynamic_axes={"feats": {0: "B", 1: "T"}, "dt": {0: "B", 1: "T"},
-                                    "doy": {0: "B", 1: "T"}})
+                                    "doy": {0: "B", 1: "T"}, "spec": {0: "B", 1: "T"}})
+    removed = strip_unused_input(os.path.join(PLUGIN_MODEL, "typenet_cfc.onnx"), "spec")
     print(f"[onnx] exported typenet_cfc.onnx "
-          f"({os.path.getsize(os.path.join(PLUGIN_MODEL, 'typenet_cfc.onnx')) / 1e6:.1f} MB)",
-          flush=True)
+          f"({os.path.getsize(os.path.join(PLUGIN_MODEL, 'typenet_cfc.onnx')) / 1e6:.1f} MB, "
+          f"unused spec {'stripped' if removed else 'used'})", flush=True)
     sess = ort.InferenceSession(os.path.join(PLUGIN_MODEL, "typenet_cfc.onnx"),
                                 providers=["CPUExecutionProvider"])
-    for TT in (3, 8):
+    for TT in (2, 3, 4, 8):
         f2 = torch.randn(2, TT, 768) * 0.5
-        d2 = torch.zeros(2, TT); d2[:, 1:] = 0.5
+        d2 = torch.zeros(2, TT)
+        d2[:, 1:] = 0.5
         do2 = torch.randn(2, TT, 3) * 0.3
         with torch.no_grad():
             r2 = tw(f2, d2, do2).numpy()
         o2 = sess.run(None, {"feats": f2.numpy(), "dt": d2.numpy(), "doy": do2.numpy()})[0]
-        print(f"[onnx] cfc T={TT} max|diff| = {np.abs(o2 - r2).max():.2e}", flush=True)
+        print(f"[onnx] typenet T={TT} max|diff| = {np.abs(o2 - r2).max():.2e}", flush=True)
+
+    # ---------------- 3) real val sample check (exact lengths, mixed T)
+    z = np.load(os.path.join(EVAL, "tn_vozh.npz"))
+    idx = np.where(np.array([str(s) for s in z["split"]]) == "val")[0][:4]
+    Ls = (z["dt"][idx] > 0).sum(1) + 1
+    T = int(Ls.max())
+    f = torch.from_numpy(z["feats"][idx][:, :T].astype(np.float32))
+    d = torch.from_numpy(z["dt"][idx][:, :T].astype(np.float32))
+    do = torch.from_numpy(z["doy"][idx][:, :T].astype(np.float32))
+    with torch.no_grad():
+        r = tw(f, d, do).numpy()
+    o = sess.run(None, {"feats": f.numpy(), "dt": d.numpy(), "doy": do.numpy()})[0]
+    print(f"[onnx] real vozh val (n=4, T={T}, lens={Ls.tolist()}): "
+          f"max|diff| = {np.abs(o - r).max():.2e}", flush=True)
 
 
 if __name__ == "__main__":
