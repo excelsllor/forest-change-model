@@ -116,6 +116,12 @@ python code/train_typenet_big.py --width 256 --blocks 2 \
 California — `california.npz`; длинные ряды — `binary_long.npz`; пары — `binary_ds.npz`;
 кэши фич типов — `tn_{vozh,big4,cal,pairs,long}.npz`.
 
+**Радиометрия (важно):** все обучающие входы — L2A DN/10000 из мозаик **без применения
+BOA_ADD_OFFSET (−1000)**, т.е. в значениях остаётся +0.1. `clip 0..1.5` применяется после `/10000`
+и до энкодера (`sanitize` в `distill_encoder.py`/`extract_typenet_feats.py`, `clip` в
+`build_vozh_ctx.py`, clamp внутри ONNX-энкодера). Маска и TypeNet используют одну и ту же
+конвенцию — не подавайте им offset-corrected рефлектанс без приведения (+0.1).
+
 ## Примечания
 
 - Предыдущие варианты (conv-контекст маски, CfC-readout TypeNet, MaskNet-CK, TypeNet-CK,
