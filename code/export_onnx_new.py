@@ -60,6 +60,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--readout", default="attn", choices=("cfc", "attn"))
     ap.add_argument("--ckpt", default="typenet_big_w256_b2_attn.pth")
+    ap.add_argument("--spec", action="store_true", help="9 texture features per date")
+    ap.add_argument("--out", default="typenet_cfc.onnx")
     args = ap.parse_args()
     import onnxruntime as ort
     os.makedirs(PLUGIN_MODEL, exist_ok=True)
@@ -88,7 +90,7 @@ def main():
 
     # ---------------- 2) typenet readout
     tm = TypeNetFeats(cfc_width=256, blocks=2, head_width=256, head_mode="summary",
-                      use_spec=False, readout=args.readout)
+                      use_spec=args.spec, readout=args.readout)
     tm.load_state_dict(torch.load(os.path.join(EVAL, args.ckpt), map_location="cpu"))
     tm.eval()
     tw = torch.jit.script(tm)
@@ -99,27 +101,38 @@ def main():
     doy = torch.randn(2, 3, 3) * 0.3
     spec = torch.zeros(2, 3, 9)
     with torch.no_grad():
-        ref = tw(feats, dt, doy).numpy()
-    torch.onnx.export(tw, (feats, dt, doy, spec), os.path.join(PLUGIN_MODEL, "typenet_cfc.onnx"),
+        ref = (tw(feats, dt, doy, spec) if args.spec else tw(feats, dt, doy)).numpy()
+    torch.onnx.export(tw, (feats, dt, doy, spec), os.path.join(PLUGIN_MODEL, args.out),
                       input_names=["feats", "dt", "doy", "spec"], output_names=["logits"],
                       opset_version=17, do_constant_folding=True, dynamo=False,
                       dynamic_axes={"feats": {0: "B", 1: "T"}, "dt": {0: "B", 1: "T"},
                                     "doy": {0: "B", 1: "T"}, "spec": {0: "B", 1: "T"}})
-    removed = strip_unused_input(os.path.join(PLUGIN_MODEL, "typenet_cfc.onnx"), "spec")
-    print(f"[onnx] exported typenet_cfc.onnx "
-          f"({os.path.getsize(os.path.join(PLUGIN_MODEL, 'typenet_cfc.onnx')) / 1e6:.1f} MB, "
-          f"unused spec {'stripped' if removed else 'used'})", flush=True)
-    sess = ort.InferenceSession(os.path.join(PLUGIN_MODEL, "typenet_cfc.onnx"),
+    removed = False if args.spec else strip_unused_input(
+        os.path.join(PLUGIN_MODEL, args.out), "spec")
+    print(f"[onnx] exported {args.out} "
+          f"({os.path.getsize(os.path.join(PLUGIN_MODEL, args.out)) / 1e6:.1f} MB, "
+          f"spec {'used' if args.spec else ('stripped' if removed else 'unused')})",
+          flush=True)
+    sess = ort.InferenceSession(os.path.join(PLUGIN_MODEL, args.out),
                                 providers=["CPUExecutionProvider"])
     for TT in (2, 3, 4, 8):
         f2 = torch.randn(2, TT, 768) * 0.5
         d2 = torch.zeros(2, TT)
         d2[:, 1:] = 0.5
         do2 = torch.randn(2, TT, 3) * 0.3
+        s2 = torch.randn(2, TT, 9) * 0.1
         with torch.no_grad():
-            r2 = tw(f2, d2, do2).numpy()
-        o2 = sess.run(None, {"feats": f2.numpy(), "dt": d2.numpy(), "doy": do2.numpy()})[0]
+            r2 = (tw(f2, d2, do2, s2) if args.spec else tw(f2, d2, do2)).numpy()
+        feed = {"feats": f2.numpy(), "dt": d2.numpy(), "doy": do2.numpy()}
+        if args.spec:
+            feed["spec"] = s2.numpy()
+        o2 = sess.run(None, feed)[0]
         print(f"[onnx] typenet T={TT} max|diff| = {np.abs(o2 - r2).max():.2e}", flush=True)
+
+    if args.spec:
+        print("[onnx] spec model: real-val check skipped (needs texture from raw chips)",
+              flush=True)
+        return
 
     # ---------------- 3) real val sample check (exact lengths, mixed T)
     z = np.load(os.path.join(EVAL, "tn_vozh.npz"))

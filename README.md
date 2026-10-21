@@ -10,6 +10,7 @@
 |---|---|---|
 | Маска (cross-attention контекст 3×3 + length-aware CfC) | `mask_ctx_attn3_len.pth` | 4.4 МБ |
 | TypeNet (DOFA-дистиллят 12×768 + cross-attention readout) | `typenet_big_w256_b2_attn.pth` | 8.9 МБ |
+| **TypeNet Vozh-тюнинг (+9 текстурных признаков)** — по умолчанию в плагине | `typenet_vozh_attn_tex.pth` | 8.9 МБ |
 | Энкодеры (дистилляция DOFA-B) | `encoder_dofa_distilled.pth`, `encoder_dofa_distilled_big.pth` | 5.4 + 29 МБ |
 
 Подробные послойные описания и схемы: **[MODEL_MASK_ARCH.md](MODEL_MASK_ARCH.md)**,
@@ -84,9 +85,25 @@ ctx-drop 0.3; ранний стоп только при явном переоб�
 
 - GT-чипы p3 через пайплайн плагина: accuracy 0.799; logging F1 0.875 (recall 0.791),
   windfall F1 0.824 (recall 0.821), fire 0.750 (n=4).
-- Слабое место: vozh windfall (0.693; 139 val-сэмплов, 291 train).
+- Слабое место: vozh windfall (0.693, 139 val / 291 train).
 - Скорость: энкодер ~2.4 мс/чип-дата (DML); типы p3 (13 385 клеток) — **~140 с cold**
   (attention readout на CPU; кэш фич в `out_dir/cache`).
+
+### Ветровал: почему 0.69 и что даёт Vozh-тюнинг
+
+- В vozh val **52 из 139** windfall уверенно уходят в logging. Визуально это сильные
+  ветровалы/санитарные рубки, близкие к вырубке (см. `docs/windfall_montage.png`); доля
+  ветровала в чипе у пропущенных **0.18** против **0.09** у верных. Порог/калибровка не помогают
+  (max windfall F1 0.703), spectral indices — 0.664, spatial context — 0.675.
+- **Vozh-тюнинг** (только vozh, 6030 чипов, без мульти-датасетного микса) + **9 текстурных
+  признаков** B08 (4-бин гистограмма ориентаций градиента, энтропия, анизотропия, edge density,
+  std, |grad|) — `typenet_vozh_attn_tex.pth`:
+  val **acc 0.933**, logging P 0.949 / R 0.975 / **F1 0.962**,
+  windfall P 0.833 / R 0.719 / **F1 0.772** (было 0.693).
+  E2E p3: windfall **F1 0.865** (p3 val 0.595), logging 0.895, fire 0.857.
+- Итог: текстура даёт +0.079 к windfall; для **>0.9** нужен новый сигнал — Sentinel-1 (VV/VH),
+  даты сразу после шторма (до санитарной рубки) или более чистые метки причины. Текущие
+  6 каналов / 2–4 сезонные даты / 320 м этого не позволяют.
 
 ## 3. Код (`code/`)
 
@@ -102,6 +119,8 @@ ctx-drop 0.3; ранний стоп только при явном переоб�
 | `train_typenet_big.py`, `extract_typenet_feats.py`, `eval_typenet_big.py` | TypeNet: тренер, кэш фич, оценка |
 | `eval_mask_all.py` | оценка маски на всех датасетах |
 | `eval_clean_pair.py`, `check_dataflow.py` | clean-val маски и проверки dt/ctx-drop/радиометрии |
+| `exp_typenet_tex.py` | Vozh-тюнинг TypeNet + 9 текстурных признаков (ветровал) |
+| `windfall_diag.py`, `windfall_montage.py`, `windfall_fraction.py` | диагностика ветровала: confusion/уверенность, монтаж, доли пикселей |
 | `export_onnx_mask_ctx.py`, `export_onnx_new.py` | экспорт моделей для плагина |
 | `draw_arch.py` | блок-схемы архитектур |
 

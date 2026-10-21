@@ -1,0 +1,11 @@
+{
+  "tag": "tex",
+  "macro": 0.5779469946136613,
+  "per_class": [
+    0.962,
+    0.772,
+    0.0
+  ],
+  "best_epoch": 16,
+  "use_tex": true
+}
