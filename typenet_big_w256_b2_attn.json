@@ -1,31 +1,33 @@
 {
   "width": 256,
   "blocks": 2,
-  "best_val_macro_f1": 0.8696346156723092,
+  "best_val_macro_f1": 0.9106771323617998,
   "best_epoch": 48,
-  "seq_head_params": 2702347,
+  "seq_head_params": 2325763,
   "encoder_params": 7580000,
   "epochs": 60,
   "head_width": 256,
   "head_mode": "summary",
+  "spec": false,
+  "readout": "attn",
   "vozh": {
     "n": 886,
-    "macro_f1": 0.5472555959997674
+    "macro_f1": 0.5473851035594842
   },
   "big4": {
     "n": 7200,
-    "macro_f1": 0.8600221011799439
+    "macro_f1": 0.9011266802764841
   },
   "cal": {
     "n": 1471,
-    "macro_f1": 0.9720475192173306
+    "macro_f1": 0.9869146005509641
   },
   "pairs": {
     "n": 266,
-    "macro_f1": 0.9196394733966144
+    "macro_f1": 0.9696429007894801
   },
   "long": {
     "n": 52,
-    "macro_f1": 0.9385727190605239
+    "macro_f1": 0.919047619047619
   }
 }
