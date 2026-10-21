@@ -101,6 +101,7 @@ ctx-drop 0.3; ранний стоп только при явном переоб�
 | `train_big.py`, `distill_encoder.py` | обучение маски и дистилляция энкодера |
 | `train_typenet_big.py`, `extract_typenet_feats.py`, `eval_typenet_big.py` | TypeNet: тренер, кэш фич, оценка |
 | `eval_mask_all.py` | оценка маски на всех датасетах |
+| `eval_clean_pair.py`, `check_dataflow.py` | clean-val маски и проверки dt/ctx-drop/радиометрии |
 | `export_onnx_mask_ctx.py`, `export_onnx_new.py` | экспорт моделей для плагина |
 | `draw_arch.py` | блок-схемы архитектур |
 
@@ -108,6 +109,8 @@ ctx-drop 0.3; ранний стоп только при явном переоб�
 ```bash
 python code/build_vozh_ctx.py --with-big-center       # контекстные датасеты
 python code/exp_ctx_mask.py --ctx attn --k 3 --tag len  # маска (cross-attention)
+# опционально: --cont sep — LayerNorm только по 512 эмбеддингам, скаляры через MLP
+# (эксперимент: val 0.934 / clean 0.946 против 0.929 / 0.947 у inline)
 python code/train_typenet_big.py --width 256 --blocks 2 \
     --head-width 256 --head-mode summary --readout attn # TypeNet
 ```
