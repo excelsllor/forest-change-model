@@ -1,14 +1,14 @@
-"""Evolutionary post-processing for the trained CfC U-Net pixel mask.
+"""EA + fusion for the CfC U-Net pixel mask (p3-trained checkpoint).
 
-Tunes threshold + 3x3 opening/closing + minimum component size on val p1+p2;
-reports p3 test. Reuses the trained checkpoint and cached probabilities (computed
-once here). No network weights are evolved.
+EA tunes threshold/opening/closing/min_px on p1+p2 val, reports p3.
+Fusion on p3: union / intersection with spectral dNDVI/dNBR, chip-mask gate, weighted.
 """
 import json
 import os
 import sys
 
 import numpy as np
+import rasterio
 import torch
 from scipy import ndimage
 from sklearn.metrics import f1_score, precision_score, recall_score
@@ -16,6 +16,7 @@ from sklearn.metrics import f1_score, precision_score, recall_score
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "src")
 OUT = os.path.join(ROOT, "outputs", "vozh", "cfc_unet")
+EVAL = os.path.join(ROOT, "outputs", "vozh", "mask_eval")
 sys.path.insert(0, SRC)
 from cfc_unet import CfCUNet, dev, load_cache  # noqa: E402
 from ea_postprocess import evolve  # noqa: E402
@@ -57,11 +58,12 @@ def metrics(pred, y):
     yy = y.reshape(-1).astype(np.uint8)
     pp = pred.reshape(-1).astype(np.uint8)
     f = f1_score(yy, pp, zero_division=0)
-    return {"f1": float(f),
-            "precision": float(precision_score(yy, pp, zero_division=0)),
-            "recall": float(recall_score(yy, pp, zero_division=0)),
-            "iou": float(f / (2 - f) if f > 0 else 0.0),
-            "area_ratio": float(pp.sum() / max(yy.sum(), 1))}
+    return {"f1": round(float(f), 4),
+            "precision": round(float(precision_score(yy, pp, zero_division=0)), 4),
+            "recall": round(float(recall_score(yy, pp, zero_division=0)), 4),
+            "iou": round(float(f / (2 - f) if f > 0 else 0.0), 4),
+            "area_ha": round(float(pp.sum() * 0.01), 1),
+            "area_ratio": round(float(pp.sum() / max(yy.sum(), 1)), 3)}
 
 
 def main():
@@ -69,35 +71,52 @@ def main():
     va = np.where((split == "val") & np.isin(per, ["p1", "p2"]))[0]
     te = np.where((split == "val") & (per == "p3"))[0]
     model = CfCUNet().to(dev)
-    ck = torch.load(os.path.join(OUT, "cfc_unet_seed0.pth"), map_location="cpu")
+    ck = torch.load(os.path.join(OUT, "cfc_unet_seed0_p3.pth"), map_location="cpu")
     model.load_state_dict(ck["state"])
     pv = infer(model, X, dt, va)
     pt = infer(model, X, dt, te)
     yv, yt = Y[va], Y[te]
-    np.savez_compressed(os.path.join(OUT, "probs_val_test.npz"),
-                        pv=pv, pt=pt, va=va, te=te)
-    print(f"[ea] val={len(va)} p3={len(te)}", flush=True)
+    print(f"[ea] val={len(va)} p3={len(te)} gt_p3={yt.sum()*0.01:.1f} ha", flush=True)
 
     def fit(x):
         m = metrics(post(pv, x[0], x[1], x[2], x[3]), yv)
         return m["f1"] - 0.35 * abs(m["area_ratio"] - 1.0)
 
-    best, score = evolve(fit, [0.10, 0, 0, 0], [0.90, 2, 2, 80],
-                         pop=20, gens=16, seed=7, ints=(1, 2, 3))
-    x = best
-    print(f"[ea] best thr={x[0]:.3f} open={int(x[1])} close={int(x[2])} "
+    x, score = evolve(fit, [0.10, 0, 0, 0], [0.90, 2, 2, 80],
+                      pop=20, gens=16, seed=7, ints=(1, 2, 3))
+    print(f"[ea] best thr={x[0]:.3f} op={int(x[1])} cl={int(x[2])} "
           f"min_px={int(x[3])} score={score:.4f}", flush=True)
     res = {"params": {"thr": round(float(x[0]), 3), "open": int(x[1]),
                       "close": int(x[2]), "min_px": int(x[3])},
            "fitness": round(float(score), 4)}
-    for name, p, y in (("val", pv, yv), ("p3", pt, yt)):
-        m = metrics(post(p, x[0], x[1], x[2], x[3]), y)
-        res[name] = m
-        print(f"[ea] {name}: {m}", flush=True)
-    # fixed comparisons
-    for name, p, y in (("val", pv, yv), ("p3", pt, yt)):
-        res[f"{name}_base_0.45"] = metrics(post(p, 0.45, 0, 0, 0), y)
-    with open(os.path.join(OUT, "ea_result.json"), "w", encoding="utf-8") as fh:
+    u_val = post(pv, x[0], x[1], x[2], x[3])
+    u_p3 = post(pt, x[0], x[1], x[2], x[3])
+    res["val"] = metrics(u_val, yv)
+    res["p3"] = metrics(u_p3, yt)
+
+    # spectral + fusion on p3
+    dndvi = X[te, -1, 6] - X[te, 0, 6]
+    dnbr = X[te, 0, 7] - X[te, -1, 7]
+    spec = (dndvi < -0.10) | (dnbr > 0.05)
+    res["p3_spectral"] = metrics(spec, yt)
+    res["p3_union"] = metrics(u_p3 | spec, yt)
+    res["p3_intersection"] = metrics(u_p3 & spec, yt)
+    # chip mask gate on the same p3 test chips
+    z = np.load(os.path.join(EVAL, "vozh_ctx_mask.npz"), allow_pickle=True)
+    gi = z["gi"].astype(int)
+    gj = z["gj"].astype(int)
+    with rasterio.open(os.path.join(ROOT, "outputs", "vozh", "full_test_mask", "mask.tif")) as ds:
+        cm = ds.read(1)
+    gate = np.empty_like(u_p3)
+    for k, i in enumerate(te):
+        r, c = gi[i] * 32, gj[i] * 32
+        gate[k] = cm[r:r + 32, c:c + 32] == 1
+    res["p3_gate"] = metrics(u_p3 & gate, yt)
+    res["p3_union_gate"] = metrics((u_p3 | spec) & gate, yt)
+    # weighted probability + spectral
+    for w in (0.3, 0.5, 0.7):
+        res[f"p3_weighted_{w}"] = metrics((pt + w * spec) > 0.5, yt)
+    with open(os.path.join(OUT, "ea_fusion_result.json"), "w", encoding="utf-8") as fh:
         json.dump(res, fh, indent=2, ensure_ascii=False)
     print(json.dumps(res, indent=2, ensure_ascii=False), flush=True)
 

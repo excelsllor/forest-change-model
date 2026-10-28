@@ -1,0 +1,89 @@
+{
+  "params": {
+    "thr": 0.438,
+    "open": 0,
+    "close": 0,
+    "min_px": 11
+  },
+  "fitness": 0.927,
+  "val": {
+    "f1": 0.927,
+    "precision": 0.9269,
+    "recall": 0.9271,
+    "iou": 0.864,
+    "area_ha": 1634.8,
+    "area_ratio": 1.0
+  },
+  "p3": {
+    "f1": 0.9144,
+    "precision": 0.9173,
+    "recall": 0.9115,
+    "iou": 0.8423,
+    "area_ha": 901.4,
+    "area_ratio": 0.994
+  },
+  "p3_spectral": {
+    "f1": 0.8453,
+    "precision": 0.8844,
+    "recall": 0.8095,
+    "iou": 0.732,
+    "area_ha": 830.3,
+    "area_ratio": 0.915
+  },
+  "p3_union": {
+    "f1": 0.8931,
+    "precision": 0.8616,
+    "recall": 0.927,
+    "iou": 0.8069,
+    "area_ha": 976.0,
+    "area_ratio": 1.076
+  },
+  "p3_intersection": {
+    "f1": 0.8663,
+    "precision": 0.9531,
+    "recall": 0.794,
+    "iou": 0.7641,
+    "area_ha": 755.7,
+    "area_ratio": 0.833
+  },
+  "p3_gate": {
+    "f1": 0.886,
+    "precision": 0.9207,
+    "recall": 0.8539,
+    "iou": 0.7953,
+    "area_ha": 841.3,
+    "area_ratio": 0.927
+  },
+  "p3_union_gate": {
+    "f1": 0.87,
+    "precision": 0.875,
+    "recall": 0.8652,
+    "iou": 0.77,
+    "area_ha": 896.9,
+    "area_ratio": 0.989
+  },
+  "p3_weighted_0.3": {
+    "f1": 0.9137,
+    "precision": 0.9135,
+    "recall": 0.9139,
+    "iou": 0.8411,
+    "area_ha": 907.5,
+    "area_ratio": 1.0
+  },
+  "p3_weighted_0.5": {
+    "f1": 0.893,
+    "precision": 0.8635,
+    "recall": 0.9247,
+    "iou": 0.8067,
+    "area_ha": 971.4,
+    "area_ratio": 1.071
+  },
+  "p3_weighted_0.7": {
+    "f1": 0.893,
+    "precision": 0.8635,
+    "recall": 0.9247,
+    "iou": 0.8067,
+    "area_ha": 971.4,
+    "area_ratio": 1.071
+  }
+}

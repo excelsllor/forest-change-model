@@ -156,3 +156,9 @@ BOA_ADD_OFFSET (−1000)**, т.е. в значениях остаётся +0.1. 
 - `type_one_dofa.pth` — same 768-d encoder, 3x3 context, 2 Bi-CfC blocks, attention readout + texture9/spectral9; val acc 0.9357, macro01 0.8684, p3 macro01 0.9086.
 - `cfc_unet_seed0.pth` — CfC U-Net pixel mask 10 m, T 2–8; val F1 0.9255; p3 0.8714 @0.45; EA 0.8737 @thr 0.402/min_px 8.
 - `code/two_models_dofa.py`, `code/cfc_unet.py`, `code/ea_cfc_unet.py`.
+
+## v5.2 — CfC U-Net + EA (p3-trained, developed CfC block)
+
+- `cfc_unet_p3.pth` — U-Net с `CfCBiBlock`×2 + `AttnReadout` на bottleneck, T 2–8, обучен с p3 train. p3 val: F1 0.9144, IoU 0.8423, площадь 0.994. EA: thr 0.438, min_px 11.
+- `cfc_unet_p3_ea.json` — EA + fusion (union / intersection / chip gate / weighted). U-Net+EA лучший F1/IoU; weighted 0.3 даёт площадь 1.000.
+- `code/cfc_unet.py`, `code/ea_cfc_unet.py`.

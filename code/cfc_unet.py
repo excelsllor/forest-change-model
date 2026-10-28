@@ -1,4 +1,4 @@
-"""CfC U-Net: pixel change mask at 10 m, arbitrary T (2..8).
+﻿"""CfC U-Net: pixel change mask at 10 m, arbitrary T (2..8).
 
 Vozh chips 32x32, 9 features/date (6 bands + NDVI/NBR/NDMI). Per-date shared U-Net
 encoder -> CfCBiEncoderPN over the time axis at the bottleneck (per spatial location,
@@ -28,7 +28,8 @@ DATES = ("2023-09", "2024-05", "2025-07", "2026-06")
 BANDS = ("B02", "B03", "B04", "B08", "B11", "B12")
 PIDS = ("p1", "p2", "p3")
 sys.path.insert(0, SRC)
-from cfc import CfCBiEncoderPN  # noqa: E402
+from cfc import CfCBiBlock  # noqa: E402
+from typenet_big import AttnReadout  # noqa: E402
 
 dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 SCALE = 10000.0
@@ -96,8 +97,9 @@ class CfCUNet(nn.Module):
         self.e1 = ConvBlock(in_ch, base)
         self.e2 = ConvBlock(base, base * 2)
         self.e3 = ConvBlock(base * 2, base * 4)
-        self.cfc = CfCBiEncoderPN(base * 4, hidden)
-        self.up3 = nn.ConvTranspose2d(2 * hidden, base * 2, 2, 2)
+        self.cfc = nn.ModuleList([CfCBiBlock(base * 4 if i == 0 else 2 * hidden, hidden) for i in range(2)])
+        self.pool = AttnReadout(2 * hidden, width=2 * hidden)
+        self.up3 = nn.ConvTranspose2d(4 * hidden, base * 2, 2, 2)
         self.d3 = ConvBlock(base * 4, base * 2)
         self.up2 = nn.ConvTranspose2d(base * 2, base, 2, 2)
         self.d2 = ConvBlock(base * 2, base)
@@ -112,8 +114,11 @@ class CfCUNet(nn.Module):
         seq = f3.reshape(b, t, d, h4, w4).permute(0, 3, 4, 1, 2).reshape(b * h4 * w4, t, d)
         dtx = dt.unsqueeze(1).expand(b, h4 * w4, t).reshape(-1, t)
         lx = lengths.unsqueeze(1).expand(b, h4 * w4).reshape(-1)
-        z = self.cfc(seq, dtx, lx)
-        z = z.reshape(b, h4, w4, 2 * self.cfc.hidden_size).permute(0, 3, 1, 2)
+        for blk in self.cfc:
+            seq = blk(seq, dtx)
+        valid = torch.arange(t, device=x.device)[None] < lx[:, None]
+        z = self.pool(seq, valid)
+        z = z.reshape(b, h4, w4, z.shape[-1]).permute(0, 3, 1, 2)
         s2 = f2.reshape(b, t, 2 * 32, h // 2, w // 2).mean(1)
         s1 = f1.reshape(b, t, 32, h, w).mean(1)
         y = self.d3(torch.cat([self.up3(z), s2], 1))
@@ -158,13 +163,19 @@ def main():
     ap.add_argument("--bs", type=int, default=16)
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--include-p3", action="store_true")
+    ap.add_argument("--tag", default="")
     args = ap.parse_args()
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     os.makedirs(OUT, exist_ok=True)
     X, Y, per, split, dt = load_cache()
-    tr = np.where((split == "train") & np.isin(per, ["p1", "p2"]))[0]
-    va = np.where((split == "val") & np.isin(per, ["p1", "p2"]))[0]
+    if args.include_p3:
+        tr = np.where(split == "train")[0]
+        va = np.where(split == "val")[0]
+    else:
+        tr = np.where((split == "train") & np.isin(per, ["p1", "p2"]))[0]
+        va = np.where((split == "val") & np.isin(per, ["p1", "p2"]))[0]
     te = np.where((split == "val") & (per == "p3"))[0]
     print(f"[data] train={len(tr)} val={len(va)} test_p3={len(te)} pos={Y.mean():.4f}",
           flush=True)
@@ -226,8 +237,8 @@ def main():
                 "area_ratio": float(pred.sum() / max(yy.sum(), 1))}
     res["spectral_val"] = base_metrics(va)
     res["spectral_p3"] = base_metrics(te)
-    torch.save({"state": model.state_dict()}, os.path.join(OUT, f"cfc_unet_seed{args.seed}.pth"))
-    with open(os.path.join(OUT, f"result_seed{args.seed}.json"), "w", encoding="utf-8") as fh:
+    torch.save({"state": model.state_dict()}, os.path.join(OUT, f"cfc_unet_seed{args.seed}{args.tag}.pth"))
+    with open(os.path.join(OUT, f"result_seed{args.seed}{args.tag}.json"), "w", encoding="utf-8") as fh:
         json.dump(res, fh, indent=2, ensure_ascii=False)
     print(json.dumps(res, indent=2, ensure_ascii=False), flush=True)
     print(f"[cfc_unet] saved {OUT} in {res['seconds']}s", flush=True)
@@ -235,3 +246,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
