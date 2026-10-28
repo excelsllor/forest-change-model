@@ -149,3 +149,10 @@ BOA_ADD_OFFSET (−1000)**, т.е. в значениях остаётся +0.1. 
 - Предыдущие варианты (conv-контекст маски, CfC-readout TypeNet, MaskNet-CK, TypeNet-CK,
   production 3D-CNN+CfC, fusion DOFA+CfC) удалены из репозитория.
 - Воспроизводимость: детерминированные сиды (0), скрипты в `code/`, конфиги — в CLI-аргументах.
+
+## v5.1 — one DOFA encoder + pixel CfC U-Net
+
+- `mask_one_dofa.pth` — 768-d one encoder, 3x3 context, 1 Bi-CfC block, attention readout; val F1 0.9249 @0.24, p3 0.9063.
+- `type_one_dofa.pth` — same 768-d encoder, 3x3 context, 2 Bi-CfC blocks, attention readout + texture9/spectral9; val acc 0.9357, macro01 0.8684, p3 macro01 0.9086.
+- `cfc_unet_seed0.pth` — CfC U-Net pixel mask 10 m, T 2–8; val F1 0.9255; p3 0.8714 @0.45; EA 0.8737 @thr 0.402/min_px 8.
+- `code/two_models_dofa.py`, `code/cfc_unet.py`, `code/ea_cfc_unet.py`.
