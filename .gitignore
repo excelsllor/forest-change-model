@@ -3,3 +3,5 @@
 *.zip
 *.h5
 *.npz
+__pycache__/
+*.pyc

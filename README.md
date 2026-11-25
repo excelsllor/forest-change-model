@@ -9,9 +9,14 @@
 | модель | чекпоинт | размер |
 |---|---|---|
 | Маска (cross-attention контекст 3×3 + length-aware CfC) | `mask_ctx_attn3_len.pth` | 4.4 МБ |
-| TypeNet (DOFA-дистиллят 12×768 + cross-attention readout) | `typenet_big_w256_b2_attn.pth` | 8.9 МБ |
 | **TypeNet Vozh-тюнинг (+9 текстурных признаков)** — по умолчанию в плагине | `typenet_vozh_attn_tex.pth` | 8.9 МБ |
-| Энкодеры (дистилляция DOFA-B) | `encoder_dofa_distilled.pth`, `encoder_dofa_distilled_big.pth` | 5.4 + 29 МБ |
+| Пиксельная площадь: CfC U-Net 10 м (`CfCBiBlock`×2 + `AttnReadout`) | `cfc_unet_p3.pth` | 11 МБ |
+| Энкодер типов (дистилляция DOFA-B, 12×768) | `encoder_dofa_distilled_big.pth` | 29 МБ |
+
+Чекпоинты прошлых итераций (`typenet_big_w256_b2_attn.pth`, `mask_one_dofa.pth`,
+`type_one_dofa.pth`, `cfc_unet_seed0.pth`, `encoder_dofa_distilled.pth`) убраны из дерева
+репозитория, но остаются в истории git (тег `v5.2` и раньше); их ONNX-версии финальных
+моделей поставляются внутри QGIS-плагина.
 
 Подробные послойные описания и схемы: **[MODEL_MASK_ARCH.md](MODEL_MASK_ARCH.md)**,
 **[MODEL_TYPES_ARCH.md](MODEL_TYPES_ARCH.md)**, диаграммы в [docs/](docs/).
@@ -53,7 +58,11 @@ ctx-drop 0.3; ранний стоп только при явном переоб�
 - Скорость: энкодер 0.036 мс/чип (DML, батч 512); вся сцена p3 (98 тайлов) — **42–65 с**
   (энкодер DML + CfC на CPU).
 
-## 2. Тип: `typenet_big_w256_b2_attn.pth`
+## 2. Тип: мульти-датасетная TypeNet `typenet_big_w256_b2_attn.pth` (архив)
+
+> Чекпоинт убран из дерева (доступен в истории git, тег `v5.2`). Архитектура и метрики
+> ниже описывают мульти-датасетную ветку; в плагине по умолчанию стоит Vozh-тюнинг
+> `typenet_vozh_attn_tex.pth` (§1, «Ветровал»).
 
 **Входы:** `feats` (M,T,768) — замороженный дистиллированный энкодер CnnDofaLike (λ-стем +
 12 depthwise-separable слоёв ×768, дилатации [1,2,4,8]×3, RF≈185); `dt` (M,T) — годы;
@@ -156,6 +165,9 @@ BOA_ADD_OFFSET (−1000)**, т.е. в значениях остаётся +0.1. 
 - `type_one_dofa.pth` — same 768-d encoder, 3x3 context, 2 Bi-CfC blocks, attention readout + texture9/spectral9; val acc 0.9357, macro01 0.8684, p3 macro01 0.9086.
 - `cfc_unet_seed0.pth` — CfC U-Net pixel mask 10 m, T 2–8; val F1 0.9255; p3 0.8714 @0.45; EA 0.8737 @thr 0.402/min_px 8.
 - `code/two_models_dofa.py`, `code/cfc_unet.py`, `code/ea_cfc_unet.py`.
+
+> Эти три чекпоинта убраны из дерева; восстанавливаются из истории: `git checkout v5.2 -- <файл>`.
+> Их ONNX-версии — в плагине v0.20–v0.22 (`masknet_cfc.onnx`, `typenet_cfc.onnx`).
 
 ## v5.2 — CfC U-Net + EA (p3-trained, developed CfC block)
 

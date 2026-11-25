@@ -18,10 +18,12 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--ckpt", default="mask_ctx_attn3_len.pth")
 ap.add_argument("--mode", default="attn", choices=("none", "conv", "attn", "raw"))
 ap.add_argument("--cont", default="inline", choices=("inline", "sep"))
+ap.add_argument("--dim", type=int, default=256)
+ap.add_argument("--data", default="vozh_ctx_mask.npz")
 args = ap.parse_args()
 
 dev = torch.device("cuda")
-z = np.load(os.path.join(EVAL, "vozh_ctx_mask.npz"), mmap_mode="r")
+z = np.load(os.path.join(EVAL, args.data), mmap_mode="r")
 gi, gj, y = z["gi"], z["gj"], z["y"]
 split = np.array([str(x) for x in z["split"]])
 dt = z["dt"]
@@ -59,7 +61,7 @@ def mets(sc, yy):
     return f1, P, R
 
 
-model = FeatMaskNet(args.mode, 3, ctx_width=256, cont_mode=args.cont).to(dev)
+model = FeatMaskNet(args.mode, 3, ctx_width=256, cont_mode=args.cont, dim=args.dim).to(dev)
 model.load_state_dict(torch.load(os.path.join(OUT, args.ckpt), map_location="cpu"))
 model.eval()
 tr = np.where(split == "train")[0]

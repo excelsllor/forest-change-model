@@ -99,3 +99,24 @@
 - `src/build_vozh_ctx.py` — контекстный датасет; `src/onnx_opt.py` — фолд λ-стема.
 - `src/export_onnx_mask_ctx.py` — экспорт (`--ctx attn`).
 - Датасет: `outputs/vozh/mask_eval/vozh_ctx_mask.npz`.
+
+## 8. Сравнение энкодеров: small vs big (дистиллят) vs DOFA-B teacher
+
+Та же архитектура маски (CtxAttn 3×3 + length-aware CfC), меняется только источник
+признаков. Одинаковые данные, сплит и рецепт (60 эпох, lr 1.5e-4, ctx-drop 0.3, seed 0;
+точные длины, один и тот же eval).
+
+| энкодер | dim | params | val F1 (P/R) | clean F1 | p1/p2/p3 | train F1 | скорость |
+|---|---|---|---|---|---|---|---|
+| **small CnnEncoder (под маску)** | 256 | 1.41M | **0.929** (0.951/0.907) | **0.947** | 0.922/0.959/0.917 | 0.997 | **0.036 мс/чип (DML)** |
+| big CnnDofaLike (под типы) | 768 | 7.58M | 0.917 (0.942/0.893) | 0.939 | 0.906/0.956/0.909 | 0.974 | 2.4 мс/чип (DML) |
+| DOFA-B teacher (CLS) | 768 | 86M | 0.897 (0.926/0.870) | 0.905 | 0.876/0.908/0.924 | 0.845 | ~0.19 мс/чип (224 px) |
+
+Вывод: **small лучше всех** — даже лучше самого DOFA-B teacher (+0.032 val / +0.042 clean).
+DOFA CLS — глобальный признак (patch 16, апскейл 32→224), он теряет локальные детали изменения;
+дистилляция в 256-d CNN + небольшой readout обобщают лучше. big-дистиллят ближе к small, но
+хуже и в 67× медленнее. Для маски оставляем **small**; big используется в TypeNet.
+
+Скрипты: `build_vozh_ctx_big.py` (768-d дистиллят) и `build_vozh_ctx_dofa.py` (DOFA-B teacher)
+для 6030 чипов + 3×3 окрестность; `exp_ctx_mask.py --ctx attn --k 3 --dim 768 --data ...
+--tag big|dofa`; `eval_clean_pair.py --dim 768 --data ...`.
